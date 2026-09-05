@@ -107,7 +107,7 @@ const DEFAULT_SIM_PARAMS: SimParams = {
   damping: DAMPING,
 }
 
-const SIM_PARAMS_KEY = 'dsh-agent-canvas:sim-params'
+const SIM_PARAMS_KEY = 'context-web:sim-params'
 
 function loadSimParams(): SimParams {
   const fallback = { ...DEFAULT_SIM_PARAMS }
