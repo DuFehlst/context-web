@@ -33,6 +33,12 @@ npm test        # 上游迁移测试 + 骨架测试
 npm run build   # host 语法检查 + client 打包（tsdown → lib/client.js）
 ```
 
+## 已知限制（继承自上游）
+
+- 「详情」视图展示的是画布投影消息（单条 ≤8000 字符，超长截断并提示）；完整会话历史以 DSH 原生会话为准。`app.js` 的 `loadThreadHistory` 为空实现，与上游 dsh-synapse v0.4.1 相同——本仓库按 spec 边界不重写上游功能，暂不扩展。
+- wire 协议消息类型保留 `synapse:` 前缀（上游线协议的历史命名，测试断言依赖）。
+- 仅支持 web profile；多实例共享同一 workspaces.json 为 last-writer-wins（有跨进程锁与告警，建议只跑一个实例）。
+
 ## 许可
 
 [MIT](LICENSE)（保留 dsh-synapse 与 dsh-agent-canvas 版权署名）。
