@@ -1,0 +1,12 @@
+# context-web：单包双视图（会话地图 + Agent 画布）。
+# 复用 DSH 现有 Web Server，不启动第二个应用进程。
+- insert:
+    - id: context-web
+      name: context-web
+      config:
+        # profile 可在自己的 cordis.patch.yml 覆盖此路径。
+        dataFile: !!js dshHomePath('context-web/workspaces.json')
+        autoProjection: true
+        projectionWorkspaceTitle: DSH 任务
+        # 额外允许的 /context-web Host（host 或 host:port）；localhost 与 127.0.0.1 始终允许。
+        trustedHosts: []
