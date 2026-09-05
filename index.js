@@ -19,7 +19,7 @@ const LOCK_STALE_MS = 60_000
 // event (issue #13: per-event saves pinned the main thread at ~90% CPU).
 const SAVE_DEBOUNCE_MS = 800
 
-/** JSON persistence for the Synapse workspace graph. */
+/** JSON persistence for the Context Web workspace graph. */
 export class WorkspaceStore {
   constructor(dataFile) {
     if (typeof dataFile !== 'string' || dataFile.length === 0) throw new Error('context-web: config.dataFile must be a non-empty path')
@@ -110,7 +110,7 @@ export class WorkspaceStore {
     })
   }
 
-  /** Keep only the canvas graph in Synapse; DSH remains the source of session truth. */
+  /** Keep only the canvas graph in Context Web; DSH remains the source of session truth. */
   async syncSessions(sessions, removedSessionIds = []) {
     return this.mutate(() => {
       if (!Array.isArray(sessions)) throw new InputError('sessions 必须是数组')
@@ -288,14 +288,15 @@ export class WorkspaceStore {
         process.stderr.write('context-web: workspaces.json 已被另一个 dsh web 实例修改，本实例的写入可能覆盖其更改——请只运行一个实例\n')
       }
     }
-    await this.acquireLock()
+    const locked = await this.acquireLock()
     try {
       const temporaryFile = `${this.dataFile}.${process.pid}.tmp`
       await writeFile(temporaryFile, `${JSON.stringify(this.state)}\n`, 'utf8')
       await rename(temporaryFile, this.dataFile)
       this.lastKnownMtime = (await stat(this.dataFile)).mtimeMs
     } finally {
-      await this.releaseLock()
+      // 只有本进程真正拿到锁才释放；否则会误删另一个实例持有的活锁。
+      if (locked) await this.releaseLock()
     }
   }
 
@@ -306,15 +307,16 @@ export class WorkspaceStore {
   /** Take an exclusive cross-process lock, breaking a stale one; warn when a live process holds it. */
   async acquireLock() {
     const lockFile = `${this.dataFile}.lock`
-    if (await this.tryAcquire(lockFile)) return
+    if (await this.tryAcquire(lockFile)) return true
     if (await this.lockIsStale(lockFile)) {
       await unlink(lockFile).catch(() => {})
-      if (await this.tryAcquire(lockFile)) return
+      if (await this.tryAcquire(lockFile)) return true
     }
     if (!this.lockWarned) {
       this.lockWarned = true
       process.stderr.write('context-web: 另一个 dsh web 实例正在写入 workspaces.json——请只运行一个实例，否则画布数据可能互相覆盖\n')
     }
+    return false
   }
 
   async tryAcquire(lockFile) {
@@ -566,7 +568,7 @@ function normalizeState(value) {
     }
     migrated = true
   } else {
-    throw new Error('expected Synapse data version 1, 2, 3, or 4')
+    throw new Error('expected Context Web data version 1, 2, 3, or 4')
   }
   if (state.version !== 4) {
     if (foldLegacyToolCards(state.workspaces)) migrated = true
@@ -741,7 +743,7 @@ function page() {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Context Web for DSH</title><link rel="stylesheet" href="/context-web/styles.css"></head><body><div id="app"></div><script src="/context-web/app.js"></script></body></html>`
 }
 
-/** Mount Synapse routes on the existing DSH Web Server. */
+/** Mount Context Web routes on the existing DSH Web Server. */
 export function apply(ctx, config) {
   const store = new WorkspaceStore(config?.dataFile)
   const autoProjection = config?.autoProjection !== false
@@ -817,7 +819,7 @@ export function apply(ctx, config) {
       if (error instanceof InputError) return sendJson(res, 400, { error: error.message })
       if (error instanceof NotFoundError) return sendJson(res, 404, { error: error.message })
       ctx.logger.error(error instanceof Error ? error : new Error(String(error)))
-      return sendJson(res, 500, { error: 'Synapse 数据暂时不可用' })
+      return sendJson(res, 500, { error: 'Context Web 数据暂时不可用' })
     }
   }
   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/context-web', handler: (_req, res) => { res.writeHead(302, { location: '/context-web/' }); res.end() } }), 'context-web: redirect')
