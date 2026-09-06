@@ -16,6 +16,9 @@ test('client 打包产物注册 context-web 模块并包含双视图注入', asy
   // 主题与数据路径命名空间
   assert.match(bundle, /data-ds-dark-theme/)
   assert.match(bundle, /\/context-web\/api\/sessions\/sync/)
+  // 开关悬浮定位：位于 DSH header 之下且不透明，避免与顶部 header 叠字（bugfix）
+  assert.match(bundle, /context-web-switch\{position:fixed;z-index:80;top:64px;left:50%/)
+  assert.match(bundle, /background:#fff/)
   // 统一 localStorage 命名空间，无上游残留
   assert.match(bundle, /context-web:sim-params/)
   assert.doesNotMatch(bundle, /dsh-synapse/)
