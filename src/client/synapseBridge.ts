@@ -58,9 +58,11 @@ const currentSession = ctx => {
         overlay.classList.remove('is-opening')
         overlay.hidden = true
         setView('dialog')
+        // Pause the map's projection polling while hidden.
+        send('synapse:map-closed')
       }
       const send = (type, payload) => { frame.contentWindow?.postMessage({ source: 'context-web', type, ...payload }, location.origin) }
-      let syncQueued = false
+      let syncTimer = 0
       let knownSessionIds = new Set()
       const liveUnsubscribers = new Map()
       const syncLiveSessions = () => {
@@ -82,16 +84,22 @@ const currentSession = ctx => {
         for (const [id, unsubscribe] of liveUnsubscribers) if (!snapshot.ids.includes(id)) { unsubscribe(); liveUnsubscribers.delete(id) }
       }
       const syncSessions = () => {
-        if (syncQueued) return
-        syncQueued = true
-        queueMicrotask(() => {
-          syncQueued = false
+        // Trailing debounce: session-list mutations arrive in bursts while an
+        // agent works (every streamed turn event triggers a store update), so
+        // an undebounced sync POSTs once per event — an observed request storm
+        // (1400+ POSTs / 6 min) against /context-web/api/sessions/sync. 2s
+        // while the map is hidden (eventual consistency is fine), 300ms while
+        // it is visible so an opened map starts from fresh session metadata.
+        if (syncTimer !== 0) return
+        const delay = overlay.hidden ? 2000 : 300
+        syncTimer = window.setTimeout(() => {
+          syncTimer = 0
           const sessions = sessionSnapshot(ctx)
           const sessionIds = new Set(sessions.map(session => session.id))
           const removedSessionIds = [...knownSessionIds].filter(id => !sessionIds.has(id))
           knownSessionIds = sessionIds
           void fetch('/context-web/api/sessions/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessions, removedSessionIds }) }).catch(() => {})
-        })
+        }, delay)
       }
       const syncTheme = () => {
         const dark = document.body?.hasAttribute?.('data-ds-dark-theme') === true
@@ -131,7 +139,9 @@ const currentSession = ctx => {
       }
       const onFrameLoad = () => {
         syncCurrentSession()
-        if (mapOpening) send('synapse:map-opened')
+        // Re-announce an already-open map after an iframe reload so its poller
+        // re-arms (the iframe starts with polling paused until told otherwise).
+        if (mapOpening || !overlay.hidden) send('synapse:map-opened')
       }
       const onMessage = event => {
         if (event.origin !== location.origin || event.data?.source !== 'context-web') return
@@ -227,6 +237,7 @@ const currentSession = ctx => {
         window.removeEventListener('message', onMessage)
         window.removeEventListener('keydown', onKeyDown)
         themeObserver?.disconnect()
+        window.clearTimeout(syncTimer)
         unsubscribeSessions()
         unsubscribeWorkspaces()
         for (const unsubscribe of liveUnsubscribers.values()) unsubscribe()

@@ -1689,9 +1689,16 @@ window.addEventListener('message', event => {
     // session must keep the user's viewport. A fresh canvas (canvasView
     // not initialized) still centers via renderCanvas; a real session switch
     // re-centers in the current-session handler below.
+    mapOpen = true
     state.mode = 'canvas'
     render()
     window.requestAnimationFrame(() => post('synapse:map-ready'))
+    // The projection poller is paused while the map is closed, so opening it
+    // must immediately refresh the possibly-stale canvas data.
+    void pollProjection()
+  }
+  if (data.type === 'synapse:map-closed') {
+    mapOpen = false
   }
   if (data.type === 'synapse:theme') {
     document.documentElement.dataset.theme = data.dark === true ? 'dark' : 'light'
@@ -1699,8 +1706,22 @@ window.addEventListener('message', event => {
   if (data.type === 'synapse:workspaces') {
     state.dshWorkspaces = Array.isArray(data.workspaces) ? data.workspaces.filter(workspace => typeof workspace?.id === 'string' && typeof workspace.title === 'string' && Array.isArray(workspace.sessionIds)) : []
     const current = currentDshWorkspace()
-    if (current !== undefined && current.id !== state.selectedDshWorkspaceId) void openDshWorkspace(current.id).catch(setError)
-    else if (state.selectedDshWorkspaceId !== null) void openDshWorkspace(state.selectedDshWorkspaceId).catch(setError)
+    const reopenSame = () => {
+      if (sameWorkspaceOpenTimer !== 0) return
+      sameWorkspaceOpenTimer = window.setTimeout(() => {
+        sameWorkspaceOpenTimer = 0
+        const id = state.selectedDshWorkspaceId
+        if (id === null) return
+        void openDshWorkspace(id).catch(setError)
+      }, 2_000)
+    }
+    if (current !== undefined && current.id !== state.selectedDshWorkspaceId) {
+      // A real workspace switch: open promptly and cancel a pending
+      // throttled re-open of the previous workspace.
+      window.clearTimeout(sameWorkspaceOpenTimer)
+      sameWorkspaceOpenTimer = 0
+      void openDshWorkspace(current.id).catch(setError)
+    } else if (state.selectedDshWorkspaceId !== null) reopenSame()
     else if (canReplaceView()) render()
   }
   if (data.type === 'synapse:current-session') {
@@ -1755,6 +1776,17 @@ window.addEventListener('message', event => {
 post('synapse:request-current')
 refreshSummaries().catch(setError)
 let polling = false
+// The map is polled only while the overlay is actually open (the bridge
+// announces open/close). The hidden iframe used to keep fetching the full
+// workspace state every second forever, which eventually destabilized the
+// host page on large canvases.
+let mapOpen = false
+// The bridge re-sends synapse:workspaces on every session-list change while
+// the map is open; without a throttle, each of those re-opens the selected
+// workspace (7 detail fetches + a full canvas re-render) — a measured storm
+// of thousands of requests per minute while an agent is active. Re-opens of
+// the already-selected workspace are capped to one trailing call per 2s.
+let sameWorkspaceOpenTimer = 0
 let liveRenderTimer = 0
 let liveCardFrame = 0
 let liveCardSessionId = null
@@ -1797,10 +1829,13 @@ function scheduleLiveRender() {
   }, 120)
 }
 async function pollProjection() {
-  if (polling || document.hidden || !canReplaceView()) return
+  if (polling || document.hidden || !mapOpen || !canReplaceView()) return
   polling = true
   try {
     await refreshProjection()
   } finally { polling = false }
 }
-window.setInterval(() => { void pollProjection() }, 1_000)
+// 10s (was 1s): each poll fetches the full workspace state (multi-MB on a
+// grown canvas), so 1Hz was the main background load that white-screened the
+// host page. Opening the map refreshes immediately via synapse:map-opened.
+window.setInterval(() => { void pollProjection() }, 10_000)

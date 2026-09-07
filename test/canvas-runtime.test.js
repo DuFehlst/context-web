@@ -17,7 +17,7 @@ test('reuses the live map iframe and retries initialization only after iframe lo
 
   assert.doesNotMatch(openFlow, /frame\.src\s*=/)
   assert.match(openFlow, /const onFrameLoad/)
-  assert.match(openFlow, /if \(mapOpening\) send\('synapse:map-opened'\)/)
+  assert.match(openFlow, /if \(mapOpening \|\| !overlay\.hidden\) send\('synapse:map-opened'\)/)
   assert.ok(open.indexOf('overlay.hidden = false') < open.indexOf("send('synapse:map-opened')"))
   assert.match(open, /overlay\.classList\.add\('is-opening'\)/)
 })
