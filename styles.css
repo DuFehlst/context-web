@@ -102,6 +102,11 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .graph-branch-button svg { fill: currentColor; }
 .graph-continue-button:hover, .graph-fold-button:hover, .graph-branch-button:hover { border-color: #111827; background: #f3f4f6; }
 .graph-continue-button:focus-visible, .graph-fold-button:focus-visible, .graph-branch-button:focus-visible { outline: 2px solid #3478f6; outline-offset: 2px; }
+.graph-head-fold-button { display: inline-flex; width: fit-content; min-height: 22px; align-items: center; border: 1px solid #d1d5db; border-radius: 999px; background: #f9fafb; padding: 0 9px; color: #6b7280; font: 600 11px Inter, system-ui, sans-serif; }
+.graph-head-fold-button:hover { border-color: #9ca3af; background: #f3f4f6; color: #111827; }
+.graph-head-fold-button:focus-visible { outline: 2px solid #3478f6; outline-offset: 2px; }
+[data-theme="dark"] .graph-head-fold-button { border-color: #3a3d42; background: #1b1c1f; color: #9ca3af; }
+[data-theme="dark"] .graph-head-fold-button:hover { border-color: #6b7280; background: #26282d; color: #e6e8eb; }
 .selection-followup { position: fixed; z-index: 90; display: inline-flex; min-height: 30px; align-items: center; gap: 4px; transform: translateX(-100%); border-color: #3478f6; border-radius: 6px; background: #3478f6; padding: 0 8px; color: #fff; font-size: 12px; font-weight: 650; line-height: 1; box-shadow: 0 4px 12px rgba(37,99,235,.24); user-select: none; }
 .selection-followup:hover { border-color: #2563eb; background: #2563eb; color: #fff; }
 .selection-followup svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; }

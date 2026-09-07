@@ -44,9 +44,20 @@ const savedCollapsedCards = (() => {
     return Array.isArray(value) ? value.filter(item => typeof item === 'string') : []
   } catch { return [] }
 })()
+const EXPANDED_THREAD_HEADS_KEY = 'context-web:expanded-thread-heads:v1'
+const savedExpandedThreadHeads = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem(EXPANDED_THREAD_HEADS_KEY) ?? '[]')
+    return Array.isArray(value) ? value.filter(item => typeof item === 'string') : []
+  } catch { return [] }
+})()
 const CARD_WIDTH = 310
 const CARD_HEIGHT = 276
 const CARD_GAP_Y = 42
+// Long sessions render one card per turn; beyond this many turns the older
+// head of the chain is folded behind a "show earlier turns" control instead
+// of stretching the canvas into a 40,000px line.
+const MAX_THREAD_HEAD_TURNS = 8
 const CAMERA_INSET_X = 56
 const CAMERA_INSET_Y = 56
 // Cards outside the viewport (plus this world-space margin) are not mounted
@@ -57,7 +68,7 @@ const state = {
   summaries: [], workspace: null, activeId: null, selectedCardId: null, mode: 'canvas', zoom: 1, currentDsh: null, sidebarCollapsed: false,
   dshWorkspaces: [], selectedDshWorkspaceId: null,
   historyBySession: new Map(), historyRequests: new Map(), pendingReplies: new Map(), pendingRpc: new Map(), liveReplies: new Map(),
-  draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions), collapsedCardIds: new Set(savedCollapsedCards), quickPhrases: savedQuickPhrases, quickPhraseEditorOpen: false,
+  draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions), collapsedCardIds: new Set(savedCollapsedCards), expandedThreadHeads: new Set(savedExpandedThreadHeads), quickPhrases: savedQuickPhrases, quickPhraseEditorOpen: false,
   dragging: false, canvasGesture: false, canvasRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 }, mapCardSessionSwitches: new Set(),
   expandedMessageIds: new Set(),
   canvasCards: undefined, canvasCardsById: undefined, canvasGraph: undefined, mountedCardIds: new Set(), canvasNeedsCenter: false,
@@ -81,6 +92,10 @@ function persistCardPositions() {
 
 function persistCollapsedCards() {
   try { localStorage.setItem(COLLAPSED_CARDS_KEY, JSON.stringify([...state.collapsedCardIds])) } catch { /* Private browsing may disable local storage. */ }
+}
+
+function persistExpandedThreadHeads() {
+  try { localStorage.setItem(EXPANDED_THREAD_HEADS_KEY, JSON.stringify([...state.expandedThreadHeads])) } catch { /* Private browsing may disable local storage. */ }
 }
 
 function persistQuickPhrases() {
@@ -142,12 +157,32 @@ function settleRpc(requestId, value, error) {
 
 function setError(error = '') { state.error = error instanceof Error ? error.message : error; render() }
 
+// System-injected user messages are harness plumbing, never real questions:
+// runtime-context snapshots, workspace instructions, DSWM memory prompts, and
+// retired doublecheck gates all arrive as standalone user messages and used to
+// render as one noise card each. This prefix list matches the message forms
+// observed in the projection store (see 诊断/user-prefix-stats).
+const SYSTEM_INJECTED_PREFIXES = [
+  'Time sampled while preparing',
+  '<system-reminder>',
+  '【DSWM】',
+  'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+  'Double-check before you ship:',
+  'Green gate:',
+  'Red/green discipline:',
+]
+function isSystemInjectedMessage(text) {
+  if (typeof text !== 'string') return false
+  const trimmed = text.trimStart()
+  return SYSTEM_INJECTED_PREFIXES.some(prefix => trimmed.startsWith(prefix))
+}
+
 function messagesFromEvents(events) {
   if (!Array.isArray(events)) return []
   return events.flatMap(event => {
     const content = event?.data?.message?.content ?? event?.data?.content
     const text = Array.isArray(content) ? content.filter(block => block?.type === 'text').map(block => block.text).filter(Boolean).join('\n') : ''
-    if (event?.type === 'user/message' && text && !text.startsWith('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.')) return [{ kind: 'user', text, at: event.time, sourceSeq: event.seq }]
+    if (event?.type === 'user/message' && text && !isSystemInjectedMessage(text)) return [{ kind: 'user', text, at: event.time, sourceSeq: event.seq }]
     if (event?.type === 'assistant/message' && text) return [{ kind: 'assistant', text, at: event.time, sourceSeq: event.seq }]
     return []
   })
@@ -408,10 +443,11 @@ function settlePendingReply(thread, messages) {
 }
 
 function messagesFor(thread) {
-  // A runtime-context snapshot is internal DSH state, never a user turn.
-  // Filter here as well as during persistence so existing saved workspaces
-  // immediately render one question and its answer as one card.
-  const messages = persistedMessagesFor(thread).filter(message => !(message.kind === 'user' && typeof message.text === 'string' && message.text.trimStart().startsWith('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.')))
+  // System-injected messages (runtime-context snapshots, skill reminders,
+  // DSWM prompts) are harness plumbing, never user turns. Filter here as well
+  // as during projection so existing saved workspaces immediately render one
+  // question and its answer as one card.
+  const messages = persistedMessagesFor(thread).filter(message => !(message.kind === 'user' && isSystemInjectedMessage(message.text)))
   const pending = state.pendingReplies.get(thread.dshSessionId)
   if (pending === undefined) return messages
   if (settlePendingReply(thread, messages)) {
@@ -636,6 +672,19 @@ function layoutConversationGraph(cards, threads) {
   for (const thread of threads) visitThread(thread.id)
 
   const byId = new Map(cards.map(card => [card.id, card]))
+  // Cross-thread children (fork branches) fan out from their parent card in
+  // consecutive columns; same-thread turn chains stack vertically below it.
+  const branchOrder = new Map()
+  const branchCountByParent = new Map()
+  for (const card of cards) {
+    if (card.parentId === null) continue
+    const parent = byId.get(card.parentId)
+    if (parent === undefined || parent.dshThreadId === card.dshThreadId) continue
+    const index = branchCountByParent.get(card.parentId) ?? 0
+    branchCountByParent.set(card.parentId, index + 1)
+    branchOrder.set(card.id, index)
+  }
+  const BRANCH_COLUMN_GAP = CARD_WIDTH + 55
   const positioned = new Map()
   const positionFor = (card, visiting = new Set()) => {
     if (positioned.has(card.id)) return positioned.get(card.id)
@@ -643,10 +692,15 @@ function layoutConversationGraph(cards, threads) {
     visiting.add(card.id)
     const parent = card.parentId === null ? undefined : byId.get(card.parentId)
     const parentPosition = parent === undefined ? undefined : positionFor(parent, visiting)
-    const position = {
-      x: parentPosition === undefined ? 86 : parentPosition.x + 365,
-      y: 82 + (laneByThread.get(card.dshThreadId) ?? 0) * (CARD_HEIGHT + CARD_GAP_Y),
-    }
+    const sameThread = parent !== undefined && parent.dshThreadId === card.dshThreadId
+    // Serpentine: turns of one session stack downward; forks branch out
+    // horizontally. A 100-turn session becomes a tall column instead of a
+    // 40,000px-wide horizontal line.
+    const position = parentPosition === undefined
+      ? { x: 86, y: 82 }
+      : sameThread
+        ? { x: parentPosition.x, y: parentPosition.y + CARD_HEIGHT + CARD_GAP_Y }
+        : { x: parentPosition.x + BRANCH_COLUMN_GAP * ((branchOrder.get(card.id) ?? 0) + 1), y: parentPosition.y }
     visiting.delete(card.id)
     positioned.set(card.id, position)
     return position
@@ -780,6 +834,26 @@ function conversationGraphView(cards, collapsedCardIds = state.collapsedCardIds)
     visit(rootId)
   }
 
+  // Long-session head folding: a session renders one card per turn, so a
+  // 100+ turn conversation is a 100-card chain. Keep the recent
+  // MAX_THREAD_HEAD_TURNS turns visible and fold the older head behind a
+  // "show earlier turns" control on the chain's first visible card, unless
+  // the user expanded this thread's head.
+  const headTruncatedByCard = new Map()
+  const cardsByThreadHead = new Map()
+  for (const card of cards) {
+    const list = cardsByThreadHead.get(card.dshThreadId) ?? []
+    list.push(card)
+    cardsByThreadHead.set(card.dshThreadId, list)
+  }
+  for (const threadCards of cardsByThreadHead.values()) {
+    const count = threadCards.length
+    if (count <= MAX_THREAD_HEAD_TURNS || state.expandedThreadHeads.has(threadCards[0].dshThreadId)) continue
+    const hiddenCount = count - MAX_THREAD_HEAD_TURNS
+    for (const card of threadCards.slice(0, hiddenCount)) hiddenIds.add(card.id)
+    headTruncatedByCard.set(threadCards[hiddenCount].id, hiddenCount)
+  }
+
   // Persisted collapse roots must remain visible even if malformed metadata
   // contains a cycle where two collapsed nodes otherwise hide each other.
   for (const rootId of collapsedCardIds) hiddenIds.delete(rootId)
@@ -844,6 +918,7 @@ function conversationGraphView(cards, collapsedCardIds = state.collapsedCardIds)
     cards: cards.filter(card => !hiddenIds.has(card.id)),
     childCounts: new Map(cards.map(card => [card.id, childrenByParent.get(card.id)?.length ?? 0])),
     descendantCounts,
+    headTruncatedByCard,
   }
 }
 
@@ -880,6 +955,12 @@ function canvasConnectors(cards) {
 function conversationCard(card, graph) {
   const selected = card.id === state.selectedCardId ? 'selected' : ''
   const source = card.parentId === null ? 'DSH 会话' : card.turnIndex === 0 ? 'DSH 分支' : '追问'
+  const titleText = String(card.question ?? '').replace(/\s+/g, ' ').trim()
+  const titleShort = titleText.length <= 60 ? titleText : `${titleText.slice(0, 60)}…`
+  const headTruncated = graph.headTruncatedByCard?.get(card.id) ?? 0
+  const headFoldButton = headTruncated > 0
+    ? `<button class="graph-head-fold-button" data-action="expand-thread-head" data-thread="${card.dshThreadId}" aria-label="显示前面 ${headTruncated} 轮" title="显示前面 ${headTruncated} 轮">显示前面 ${headTruncated} 轮</button>`
+    : ''
   const continueButton = card.canContinue === true
     ? `<button class="graph-continue-button" data-action="open-continue" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" aria-label="添加追问" title="添加追问"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></button>`
     : ''
@@ -891,8 +972,9 @@ function conversationCard(card, graph) {
   return `<article class="thread-card ${selected}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
     <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
     ${continueButton}${foldButton}${branchButton}
-    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button></div>
+    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" title="查看完整会话：${escapeHtml(titleText)}">${escapeHtml(titleShort)}</button></div>
     <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span>${card.error === null ? '' : '<span class="card-error-status">失败</span>'}${card.processCount > 0 ? `<span class="card-process-count">工具 ${card.processCount}</span>` : ''}</div>
+    ${headFoldButton}
     <div class="thread-answer">${card.answer === null ? (card.error === null ? '<p class="thread-answer-empty">等待助手回复</p>' : '') : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}${card.error === null ? '' : `<p class="thread-answer-error" title="${escapeHtml(card.error.text)}">本轮失败：${escapeHtml(card.error.text)}</p>`}</div>
     <footer><button data-action="show-thread" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" title="查看完整会话" aria-label="查看完整会话"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 8.5 8 2.5l6 6V13.5a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5Z"/><path d="M6.2 14v-3.6a1.8 1.8 0 0 1 3.6 0V14" /></svg>详情</button><button data-action="open-dsh" data-thread="${card.dshThreadId}" data-seq="${Number.isInteger(card.sourceSeq) ? card.sourceSeq : ''}" title="在 DSH 中打开" aria-label="在 DSH 中打开"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H4.5A1.5 1.5 0 0 0 3 5v6.5A1.5 1.5 0 0 0 4.5 13H11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M9.5 3.5h3v3M12.4 3.6 7.5 8.5"/></svg>DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}" title="归档此会话" aria-label="归档此会话"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5h11M5.5 7v5.5a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1V7"/><path d="M4 5 5 2.8a.7.7 0 0 1 .6-.4h4.8a.7.7 0 0 1 .6.4L12 5M6 9.5h4"/></svg>归档</button></footer>
   </article>`
@@ -1595,10 +1677,17 @@ app.addEventListener('click', async event => {
       state.error = ''
       if (state.workspace !== null) revealConversationThread(conversationCards(state.workspace.threads), thread.id)
       render()
+      // Center the camera on the selected session's latest turn.
+      window.requestAnimationFrame(() => { if (state.mode === 'canvas') focusActiveCard() })
       void loadThreadHistory(thread)
       // Bidirectional current-session sync: switch DSH's current session
       // without closing the map; the client confirms via synapse:current-session.
       if (thread.dshSessionId !== null) post('synapse:activate-session', { sessionId: thread.dshSessionId })
+    }
+    if (button.dataset.action === 'expand-thread-head' && button.dataset.thread !== undefined) {
+      state.expandedThreadHeads.add(button.dataset.thread)
+      persistExpandedThreadHeads()
+      render()
     }
     if (button.dataset.action === 'show-thread' && thread !== undefined) { state.activeId = thread.id; state.mode = 'thread'; state.detailTargetCardId = button.dataset.card ?? null; render(); void loadThreadHistory(thread) }
     if (button.dataset.action === 'show-canvas') { state.mode = 'canvas'; render() }
@@ -1692,6 +1781,9 @@ window.addEventListener('message', event => {
     mapOpen = true
     state.mode = 'canvas'
     render()
+    // Opening the map centers on the active session's latest turn so a long
+    // conversation never opens into empty space far from its cards.
+    window.requestAnimationFrame(() => { if (state.mode === 'canvas') focusActiveCard() })
     window.requestAnimationFrame(() => post('synapse:map-ready'))
     // The projection poller is paused while the map is closed, so opening it
     // must immediately refresh the possibly-stale canvas data.

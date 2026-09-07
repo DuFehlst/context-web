@@ -7,7 +7,7 @@ async function loadConversationCards() {
   const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
   const start = source.indexOf('function overlapsCard')
   const end = source.indexOf('function canvasConnectors')
-  const context = { globalThis: {}, CARD_WIDTH: 310, CARD_HEIGHT: 276, CARD_GAP_Y: 42, CAMERA_INSET_X: 56, CAMERA_INSET_Y: 56, messagesFor: thread => thread.messages, state: { branchAnchors: new Map(), cardPositions: new Map(), liveReplies: new Map(), collapsedCardIds: new Set() } }
+  const context = { globalThis: {}, CARD_WIDTH: 310, CARD_HEIGHT: 276, CARD_GAP_Y: 42, CAMERA_INSET_X: 56, CAMERA_INSET_Y: 56, MAX_THREAD_HEAD_TURNS: 8, messagesFor: thread => thread.messages, state: { branchAnchors: new Map(), cardPositions: new Map(), liveReplies: new Map(), collapsedCardIds: new Set(), expandedThreadHeads: new Set() } }
   vm.createContext(context)
   vm.runInContext(`${source.slice(start, end)};globalThis.conversationCards = conversationCards;globalThis.conversationGraphView = conversationGraphView;globalThis.initialCanvasCamera = initialCanvasCamera`, context)
   return { conversationCards: context.globalThis.conversationCards, conversationGraphView: context.globalThis.conversationGraphView, initialCanvasCamera: context.globalThis.initialCanvasCamera, state: context.state }
@@ -31,7 +31,9 @@ test('projects each user question in one DSH session as a connected canvas card'
   assert.equal(cards[0].answer.text, '第一个最终回答')
   assert.equal(cards[1].question, '第二个问题')
   assert.equal(cards[1].parentId, cards[0].id)
-  assert.equal(cards[1].position.x, cards[0].position.x + 365)
+  // Same-thread turns stack vertically in one column (serpentine layout).
+  assert.equal(cards[1].position.x, cards[0].position.x)
+  assert.equal(cards[1].position.y, cards[0].position.y + 276 + 42)
   assert.equal(cards[0].canContinue, undefined)
   assert.equal(cards[1].canContinue, true)
 })
@@ -131,11 +133,12 @@ test('places a fork beside the exact parent turn while avoiding overlap', async 
   const parentTurns = cards.filter(card => card.dshThreadId === 'parent')
   const childTurn = cards.find(card => card.dshThreadId === 'child')
   assert.equal(childTurn.parentId, parentTurns[1].id)
+  // A fork branches out horizontally beside the exact parent turn.
   assert.equal(childTurn.position.x, parentTurns[1].position.x + 365)
-  assert.ok(childTurn.position.y > parentTurns[1].position.y)
+  assert.equal(childTurn.position.y, parentTurns[1].position.y)
 })
 
-test('keeps every turn of one branch on the same horizontal lane', async () => {
+test('keeps every turn of one branch in one vertical column', async () => {
   const { conversationCards } = await loadConversationCards()
   const cards = conversationCards([
     {
@@ -161,9 +164,9 @@ test('keeps every turn of one branch on the same horizontal lane', async () => {
   ])
 
   const childTurns = cards.filter(card => card.dshThreadId === 'child')
-  assert.equal(new Set(childTurns.map(card => card.position.y)).size, 1)
-  assert.equal(childTurns[1].position.x, childTurns[0].position.x + 365)
-  assert.equal(childTurns[2].position.x, childTurns[1].position.x + 365)
+  assert.equal(new Set(childTurns.map(card => card.position.x)).size, 1)
+  assert.equal(childTurns[1].position.y, childTurns[0].position.y + 276 + 42)
+  assert.equal(childTurns[2].position.y, childTurns[1].position.y + 276 + 42)
 })
 
 test('moves automatically placed cards below an occupied card instead of overlapping it', async () => {
@@ -206,8 +209,8 @@ test('does not move later turns when an earlier card is dragged', async () => {
   }])
 
   assert.equal(cards[0].position.x, 1280)
-  assert.equal(cards[1].position.x, 451)
-  assert.equal(cards[1].position.y, 82)
+  assert.equal(cards[1].position.x, 86)
+  assert.equal(cards[1].position.y, 400)
 })
 
 test('keeps a dragged pending turn position after DSH assigns a source sequence', async () => {
@@ -370,4 +373,25 @@ test('cyclic collapsed roots stay visible and count unique descendants', async (
   assert.deepEqual(Array.from(graph.cards, card => card.id), ['a', 'b'])
   assert.equal(graph.descendantCounts.get('a'), 1)
   assert.equal(graph.descendantCounts.get('b'), 1)
+})
+
+test('folds the older head of a long session behind the recent turns', async () => {
+  const { conversationCards, conversationGraphView, state } = await loadConversationCards()
+  const messages = []
+  for (let turn = 1; turn <= 12; turn++) {
+    messages.push({ kind: 'user', text: `第${turn}轮问题`, sourceSeq: turn * 2 - 1 })
+    messages.push({ kind: 'assistant', text: `第${turn}轮回答`, sourceSeq: turn * 2 })
+  }
+  const cards = conversationCards([{ id: 'session-long', parentId: null, messages }])
+
+  const graph = conversationGraphView(cards)
+  assert.equal(graph.cards.length, 8)
+  assert.deepEqual(Array.from(graph.cards, card => card.question), ['第5轮问题', '第6轮问题', '第7轮问题', '第8轮问题', '第9轮问题', '第10轮问题', '第11轮问题', '第12轮问题'])
+  assert.equal(graph.headTruncatedByCard.get(graph.cards[0].id), 4)
+
+  // Expanding the thread head restores every turn.
+  state.expandedThreadHeads.add('session-long')
+  const expanded = conversationGraphView(cards)
+  assert.equal(expanded.cards.length, 12)
+  assert.equal(expanded.headTruncatedByCard.size, 0)
 })

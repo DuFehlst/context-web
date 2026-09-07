@@ -685,7 +685,21 @@ function noteProjection(kind, text) {
 }
 
 function isRuntimeContextText(text) {
-  return typeof text === 'string' && text.trimStart().startsWith('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.')
+  if (typeof text !== 'string') return false
+  const trimmed = text.trimStart()
+  // System-injected user messages are harness plumbing, never real questions:
+  // runtime-context snapshots, workspace/skill reminders, DSWM memory prompts,
+  // and retired doublecheck gates. Keep them out of the canvas store entirely.
+  const SYSTEM_INJECTED_PREFIXES = [
+    'Time sampled while preparing',
+    '<system-reminder>',
+    '【DSWM】',
+    'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+    'Double-check before you ship:',
+    'Green gate:',
+    'Red/green discipline:',
+  ]
+  return SYSTEM_INJECTED_PREFIXES.some(prefix => trimmed.startsWith(prefix))
 }
 
 function isRuntimeContextMessage(message) {
