@@ -446,19 +446,9 @@ function stepSimulation(
 }
 
 function colourFor(node: CanvasNode): string {
-  if (node.status === 'running') {
-    return node.kind === 'workflow' ? '#2563eb' : '#16a34a'
-  }
-  if (node.status === 'failed') return '#dc2626'
-  if (node.status === 'cancelled' || node.status === 'interrupted') return '#d97706'
-  switch (node.kind) {
-    case 'agent': return '#0f172a'
-    case 'subagent': return '#64748b'
-    case 'workflow': return '#4d6bfe'
-    case 'phase': return '#8b5cf6'
-    case 'tool': return '#0e7490'
-    default: return '#94a3b8'
-  }
+  // Monochrome + single accent (ui-standard §2.9): the running state is the
+  // only accent; node type is carried by shape and label, never by colour.
+  return node.status === 'running' ? '#2563eb' : '#64748b'
 }
 
 const CANVAS_CSS = `
@@ -763,9 +753,7 @@ export function AgentCanvasView({
   const cardText = dark ? '#f1f5f9' : '#1e293b'
   const cardSubtext = dark ? '#cbd5e1' : '#64748b'
   const headerDivider = dark ? '#334155' : '#f1f5f9'
-  const badgeBgWorkflow = dark ? '#1e3a8a' : '#dbeafe'
-  const badgeBgPhase = dark ? '#4c1d95' : '#ede9fe'
-  const badgeBgSubagent = dark ? '#334155' : '#f1f5f9'
+  const badgeBg = dark ? '#334155' : '#f1f5f9'
   const panelBg = dark ? '#1e293b' : '#ffffff'
   const panelBorder = dark ? '#334155' : '#e2e8f0'
   const panelText = dark ? '#e2e8f0' : '#0f172a'
@@ -816,7 +804,7 @@ export function AgentCanvasView({
                   y1={from.y}
                   x2={to.x}
                   y2={to.y}
-                  stroke={edge.kind === 'workflow' ? '#4d6bfe' : edge.kind === 'parent' ? '#94a3b8' : '#cbd5e1'}
+                  stroke={edge.kind === 'activity' ? '#cbd5e1' : '#94a3b8'}
                   strokeWidth={1.5}
                   strokeDasharray={edge.kind === 'activity' ? '4 4' : undefined}
                   style={{ opacity: 0.7, transition: 'opacity 0.4s' }}
@@ -834,23 +822,13 @@ export function AgentCanvasView({
                 const width = Math.min(220, Math.max(160, node.label.length * 7 + 56))
                 const height = 78
                 const accent = fill
-                const statusDot = node.status === 'running'
-                  ? '#22c55e'
-                  : node.status === 'failed'
-                    ? '#ef4444'
-                    : node.status === 'cancelled' || node.status === 'interrupted'
-                      ? '#f59e0b'
-                      : '#94a3b8'
+                const statusDot = node.status === 'running' ? '#2563eb' : '#94a3b8'
                 const typeLabel = node.kind === 'workflow'
                   ? 'Workflow'
                   : node.kind === 'phase'
                     ? 'Phase'
                     : 'Subagent'
-                const typeBadgeBg = node.kind === 'workflow'
-                  ? badgeBgWorkflow
-                  : node.kind === 'phase'
-                    ? badgeBgPhase
-                    : badgeBgSubagent
+                const typeBadgeBg = badgeBg
                 return (
                   <g
                     key={node.id}
@@ -1052,9 +1030,12 @@ export function AgentCanvasView({
               aria-label="力导向设置"
               title="力导向设置"
               onClick={() => setSettingsOpen(open => !open)}
-              style={{ ...iconButtonStyle, fontSize: 15 }}
+              style={iconButtonStyle}
             >
-              ⚙
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path fillRule="evenodd" clipRule="evenodd" d="M12 8.25C9.92893 8.25 8.25 9.92893 8.25 12C8.25 14.0711 9.92893 15.75 12 15.75C14.0711 15.75 15.75 14.0711 15.75 12C15.75 9.92893 14.0711 8.25 12 8.25ZM9.75 12C9.75 10.7574 10.7574 9.75 12 9.75C13.2426 9.75 14.25 10.7574 14.25 12C14.25 13.2426 13.2426 14.25 12 14.25C10.7574 14.25 9.75 13.2426 9.75 12Z" fill="currentColor" />
+                <path fillRule="evenodd" clipRule="evenodd" d="M12 1.25C11.2954 1.25 10.6519 1.44359 9.94858 1.77037C9.26808 2.08656 8.48039 2.55304 7.49457 3.13685L6.74148 3.58283C5.75533 4.16682 4.96771 4.63324 4.36076 5.07944C3.73315 5.54083 3.25177 6.01311 2.90334 6.63212C2.55548 7.25014 2.39841 7.91095 2.32306 8.69506C2.24999 9.45539 2.24999 10.3865 2.25 11.556V12.444C2.24999 13.6135 2.24999 14.5446 2.32306 15.3049C2.39841 16.0891 2.55548 16.7499 2.90334 17.3679C3.25177 17.9869 3.73315 18.4592 4.36076 18.9206C4.96771 19.3668 5.75533 19.8332 6.74148 20.4172L7.4946 20.8632C8.48038 21.447 9.2681 21.9135 9.94858 22.2296C10.6519 22.5564 11.2954 22.75 12 22.75C12.7046 22.75 13.3481 22.5564 14.0514 22.2296C14.7319 21.9134 15.5196 21.447 16.5054 20.8632L17.2585 20.4172C18.2446 19.8332 19.0323 19.3668 19.6392 18.9206C20.2669 18.4592 20.7482 17.9869 21.0967 17.3679C21.4445 16.7499 21.6016 16.0891 21.6769 15.3049C21.75 14.5446 21.75 13.6135 21.75 12.4441V11.556C21.75 10.3866 21.75 9.45538 21.6769 8.69506C21.6016 7.91095 21.4445 7.25014 21.0967 6.63212C20.7482 6.01311 20.2669 5.54083 19.6392 5.07944C19.0323 4.63324 18.2447 4.16683 17.2585 3.58285L16.5054 3.13685C15.5196 2.55303 14.7319 2.08656 14.0514 1.77037C13.3481 1.44359 12.7046 1.25 12 1.25ZM8.22524 4.44744C9.25238 3.83917 9.97606 3.41161 10.5807 3.13069C11.1702 2.85676 11.5907 2.75 12 2.75C12.4093 2.75 12.8298 2.85676 13.4193 3.13069C14.0239 3.41161 14.7476 3.83917 15.7748 4.44744L16.4609 4.85379C17.4879 5.46197 18.2109 5.89115 18.7508 6.288C19.2767 6.67467 19.581 6.99746 19.7895 7.36788C19.9986 7.73929 20.1199 8.1739 20.1838 8.83855C20.2492 9.51884 20.25 10.378 20.25 11.5937V12.4063C20.25 13.622 20.2492 14.4812 20.1838 15.1614C20.1199 15.8261 19.9986 16.2607 19.7895 16.6321C19.581 17.0025 19.2767 17.3253 18.7508 17.712C18.2109 18.1089 17.4879 18.538 16.4609 19.1462L15.7748 19.5526C14.7476 20.1608 14.0239 20.5884 13.4193 20.8693C12.8298 21.1432 12.4093 21.25 12 21.25C11.5907 21.25 11.1702 21.1432 10.5807 20.8693C9.97606 20.5884 9.25238 20.1608 8.22524 19.5526L7.53909 19.1462C6.5121 18.538 5.78906 18.1089 5.24923 17.712C4.72326 17.3253 4.419 17.0025 4.2105 16.6321C4.00145 16.2607 3.88005 15.8261 3.81618 15.1614C3.7508 14.4812 3.75 13.622 3.75 12.4063V11.5937C3.75 10.378 3.7508 9.51884 3.81618 8.83855C3.88005 8.1739 4.00145 7.73929 4.2105 7.36788C4.419 6.99746 4.72326 6.67467 5.24923 6.288C5.78906 5.89115 6.5121 5.46197 7.53909 4.85379L8.22524 4.44744Z" fill="currentColor" />
+              </svg>
             </button>
             <button
               type="button"
@@ -1063,7 +1044,9 @@ export function AgentCanvasView({
               onClick={() => zoomBy(1.2)}
               style={iconButtonStyle}
             >
-              +
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path d="M11.25 20C11.25 20.4142 11.5858 20.75 12 20.75C12.4142 20.75 12.75 20.4142 12.75 20V12.75H20C20.4142 12.75 20.75 12.4142 20.75 12C20.75 11.5858 20.4142 11.25 20 11.25H12.75V4C12.75 3.58579 12.4142 3.25 12 3.25C11.5858 3.25 11.25 3.58579 11.25 4V11.25H4C3.58579 11.25 3.25 11.5858 3.25 12C3.25 12.4142 3.58579 12.75 4 12.75H11.25V20Z" fill="currentColor" />
+              </svg>
             </button>
             <button
               type="button"
@@ -1072,16 +1055,20 @@ export function AgentCanvasView({
               onClick={() => zoomBy(1 / 1.2)}
               style={iconButtonStyle}
             >
-              −
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path d="M20.75 12C20.75 12.4142 20.4142 12.75 20 12.75H4C3.58579 12.75 3.25 12.4142 3.25 12C3.25 11.5858 3.58579 11.25 4 11.25H20C20.4142 11.25 20.75 11.5858 20.75 12Z" fill="currentColor" />
+              </svg>
             </button>
             <button
               type="button"
               aria-label="重置视图"
               title="重置视图"
               onClick={resetView}
-              style={{ ...iconButtonStyle, fontSize: 12 }}
+              style={iconButtonStyle}
             >
-              ⟳
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path fillRule="evenodd" clipRule="evenodd" d="M2.93077 11.2003C3.00244 6.23968 7.07619 2.25 12.0789 2.25C15.3873 2.25 18.287 3.99427 19.8934 6.60721C20.1103 6.96007 20.0001 7.42199 19.6473 7.63892C19.2944 7.85585 18.8325 7.74565 18.6156 7.39279C17.2727 5.20845 14.8484 3.75 12.0789 3.75C7.8945 3.75 4.50372 7.0777 4.431 11.1982L4.83138 10.8009C5.12542 10.5092 5.60029 10.511 5.89203 10.8051C6.18377 11.0991 6.18191 11.574 5.88787 11.8657L4.20805 13.5324C3.91565 13.8225 3.44398 13.8225 3.15157 13.5324L1.47176 11.8657C1.17772 11.574 1.17585 11.0991 1.46759 10.8051C1.75933 10.5111 2.2342 10.5092 2.52824 10.8009L2.93077 11.2003ZM19.7864 10.4666C20.0786 10.1778 20.5487 10.1778 20.8409 10.4666L22.5271 12.1333C22.8217 12.4244 22.8245 12.8993 22.5333 13.1939C22.2421 13.4885 21.7673 13.4913 21.4727 13.2001L21.0628 12.7949C20.9934 17.7604 16.9017 21.75 11.8825 21.75C8.56379 21.75 5.65381 20.007 4.0412 17.3939C3.82366 17.0414 3.93307 16.5793 4.28557 16.3618C4.63806 16.1442 5.10016 16.2536 5.31769 16.6061C6.6656 18.7903 9.09999 20.25 11.8825 20.25C16.0887 20.25 19.4922 16.9171 19.5625 12.7969L19.1546 13.2001C18.86 13.4913 18.3852 13.4885 18.094 13.1939C17.8028 12.8993 17.8056 12.4244 18.1002 12.1333L19.7864 10.4666Z" fill="currentColor" />
+              </svg>
             </button>
           </div>
 
