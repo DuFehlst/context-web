@@ -241,7 +241,17 @@ def run_browser_checks(play):
                             check('E7c the detail offers 在 Agent 画布中打开', jump.count() > 0)
                             if jump.count() > 0:
                                 jump.evaluate('el => el.click()')
-                                check('E7d the jump closes the map', not page.locator('.context-web-overlay').is_visible())
+                                page.wait_for_timeout(3_000)
+                                # 契约（2026-09-12 起）：跳转**绝不允许把用户丢在空态**。
+                                # 成功时地图收起；失败时必须留在地图（旧写法先 close() 再验证，
+                                # 切换没生效就把人留在「选择工作区开始」空页）。
+                                closed = not page.locator('.context-web-overlay').is_visible()
+                                stranded = closed and (
+                                    page.locator('[role="tab"]').count() == 0
+                                    and '选择工作区' in page.inner_text('body')
+                                )
+                                check('E7d the jump never strands the user', not stranded,
+                                      'map closed with no session open' if stranded else ('closed' if closed else 'map kept open'))
                                 # Poll instead of a fixed wait: the bridge itself
                                 # converges within ~2 s (40 rounds of 50 ms).
                                 selected = False
