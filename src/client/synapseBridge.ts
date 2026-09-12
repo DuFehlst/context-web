@@ -1,5 +1,6 @@
 // 会话地图桥（迁移自 dsh-synapse client 半区，MIT，Copyright (c) 2026 liangmianya）。
 // 线协议消息类型保留 'synapse:' 前缀；命名空间（路由/数据文件/localStorage/CSS 类）已改为 context-web。
+import { AGENT_CANVAS_TAB_LABELS } from './viewIdentity'
 const currentSession = (ctx: any) => {
       const snapshot = ctx.sessions.list.getSnapshot()
       const id = snapshot.current
@@ -143,6 +144,22 @@ const currentSession = (ctx: any) => {
         // re-arms (the iframe starts with polling paused until told otherwise).
         if (mapOpening || !overlay.hidden) send('synapse:map-opened')
       }
+      // 会话头自己拥有 View 选择权（0.1.5 未导出 select API），它渲染的 tab 按钮
+      // 就是唯一公开入口：点击即走内核的 selectView → activateView + setView，
+      // 与用户手点完全同一条路径。标签要等新会话渲染出来，故做有界重试。
+      const selectAgentCanvasView = (attempt = 0) => {
+        const tabs = Array.from(document.querySelectorAll('[role="tab"]'))
+        const tab = tabs.find(node => AGENT_CANVAS_TAB_LABELS.includes(node.textContent?.trim() ?? ''))
+        if (tab instanceof HTMLElement) {
+          tab.click()
+          return
+        }
+        if (attempt >= 20) {
+          send('synapse:bridge-error', { message: 'Agent 画布标签未就绪，已在会话中打开' })
+          return
+        }
+        window.setTimeout(() => selectAgentCanvasView(attempt + 1), 50)
+      }
       const onMessage = (event: MessageEvent) => {
         if (event.origin !== location.origin || event.data?.source !== 'context-web') return
         if (event.data.type === 'synapse:close') return close()
@@ -177,6 +194,13 @@ const currentSession = (ctx: any) => {
             }
             window.setTimeout(() => tryScroll(0), 300)
           }
+          return
+        }
+        if (event.data.type === 'synapse:open-canvas') {
+          // 地图 → Agent 画布：先切会话并收起地图，再把该会话的会话区切到画布标签。
+          try { ctx.sessions.open(event.data.sessionId) } catch { return send('synapse:bridge-error', { message: '关联的 DSH 会话已不可用' }) }
+          close()
+          selectAgentCanvasView()
           return
         }
         if (event.data.type === 'synapse:activate-session') {

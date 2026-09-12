@@ -5,3 +5,5 @@ lib/
 .pytest_cache/
 _backups/
 *.bak
+test/e2e/artifacts/
+__pycache__/

@@ -11,6 +11,11 @@ const MAX_NOTE_LENGTH = 4_000
 // Projected message text cap: longer replies truncate with a marker pointing
 // at the detail view instead of silently cutting mid-sentence.
 const MAX_PROJECTION_LENGTH = 8_000
+// Tool call arguments/results are derived detail: the DSH session log keeps the
+// full text, while the canvas only needs enough to see what a tool did. Without
+// this cap they dominated the data file (measured 2026-09-12 on a 34 MB file:
+// 5.4 MB of arguments + 13.5 MB of results across 9,618 process entries).
+const MAX_PROCESS_LENGTH = 2_000
 const PROJECTION_TRUNCATED_SUFFIX = '\n——…（详情查看全文）'
 const TOPIC_COLORS = ['#0f766e', '#2563eb', '#be123c', '#7c3aed', '#b45309']
 const LOCK_STALE_MS = 60_000
@@ -43,6 +48,24 @@ export class WorkspaceStore {
     await this.ready
     const workspace = this.workspace(workspaceId)
     return structuredClone(workspace)
+  }
+
+  /**
+   * Read only the canvas nodes bound to the given DSH sessions. The map opens
+   * one DSH workspace at a time, so it must not pull every workspace's full
+   * detail just to find the threads it will render.
+   */
+  async lookupThreads(sessionIds) {
+    await this.ready
+    if (!Array.isArray(sessionIds) || sessionIds.some(item => typeof item !== 'string')) throw new InputError('sessionIds 必须是字符串数组')
+    const wanted = new Set(sessionIds)
+    const threads = []
+    for (const workspace of this.state.workspaces) {
+      for (const thread of workspace.threads) {
+        if (thread.dshSessionId !== null && wanted.has(thread.dshSessionId)) threads.push(structuredClone(thread))
+      }
+    }
+    return threads
   }
 
   async create(title) {
@@ -474,13 +497,13 @@ export class WorkspaceStore {
     const entry = process.find(item => item.callId === callId)
     if (event.type === 'tool/call') {
       if (entry === undefined) {
-        process.push({ callId, turn: data.turn, step: data.step, name: data.name, arguments: data.arguments, result: null, error: null })
+        process.push({ callId, turn: data.turn, step: data.step, name: data.name, arguments: capProcessText(data.arguments), result: null, error: null })
       } else {
         entry.name = data.name
-        entry.arguments = data.arguments
+        entry.arguments = capProcessText(data.arguments)
       }
     } else {
-      const outcome = contentText(data.message?.content)
+      const outcome = capProcessText(contentText(data.message?.content))
       const error = errorText(data.error)
       if (entry === undefined) {
         process.push({ callId, turn: data.turn, step: data.step, name: '工具调用', arguments: null, result: outcome, error })
@@ -575,6 +598,7 @@ function normalizeState(value) {
     state.version = 4
     migrated = true
   }
+  if (pruneProcessPayloads(state.workspaces)) migrated = true
   return { state, migrated }
 }
 
@@ -682,6 +706,39 @@ function noteProjection(kind, text) {
   if (normalized === '') return null
   if (normalized.length <= MAX_PROJECTION_LENGTH) return { kind, text: normalized }
   return { kind, text: `${normalized.slice(0, MAX_PROJECTION_LENGTH)}${PROJECTION_TRUNCATED_SUFFIX}` }
+}
+
+/** Cap one tool payload field; non-strings are left untouched. */
+function capProcessText(value) {
+  if (typeof value !== 'string' || value.length <= MAX_PROCESS_LENGTH) return value
+  return `${value.slice(0, MAX_PROCESS_LENGTH)}${PROJECTION_TRUNCATED_SUFFIX}`
+}
+
+/**
+ * Shrink tool payloads already persisted by an earlier version. Idempotent: it
+ * reports a change only while some payload still exceeds the cap, so the load
+ * path rewrites the file once and then leaves an up-to-date file alone.
+ */
+function pruneProcessPayloads(workspaces) {
+  let changed = false
+  for (const workspace of workspaces) {
+    for (const thread of workspace.threads ?? []) {
+      for (const entry of processEntries(thread)) {
+        const args = capProcessText(entry.arguments)
+        const result = capProcessText(entry.result)
+        if (args !== entry.arguments) { entry.arguments = args; changed = true }
+        if (result !== entry.result) { entry.result = result; changed = true }
+      }
+    }
+  }
+  return changed
+}
+
+function* processEntries(thread) {
+  for (const message of Array.isArray(thread.messages) ? thread.messages : []) {
+    for (const entry of Array.isArray(message?.process) ? message.process : []) if (entry !== null && typeof entry === 'object') yield entry
+  }
+  for (const entry of Array.isArray(thread.pendingProcess) ? thread.pendingProcess : []) if (entry !== null && typeof entry === 'object') yield entry
 }
 
 function isRuntimeContextText(text) {
@@ -822,7 +879,10 @@ export function apply(ctx, config) {
       }
       const branch = /^\/context-web\/api\/threads\/([0-9a-f-]+)\/branch$/i.exec(path)
       if (branch !== null && req.method === 'POST') return sendJson(res, 201, { thread: await store.branch(branch[1], await readJson(req)) })
-      if (path === '/context-web/api/sessions/sync' && req.method === 'POST') { const body = await readJson(req); return sendJson(res, 200, { workspaces: await store.syncSessions(body.sessions, body.removedSessionIds) }) }
+      if (path === '/context-web/api/threads/lookup' && req.method === 'POST') return sendJson(res, 200, { threads: await store.lookupThreads((await readJson(req)).sessionIds) })
+      // The map posts session metadata and ignores the reply, so answer with an
+      // acknowledgement instead of serializing every workspace summary.
+      if (path === '/context-web/api/sessions/sync' && req.method === 'POST') { const body = await readJson(req); const workspaces = await store.syncSessions(body.sessions, body.removedSessionIds); return sendJson(res, 200, { synced: true, workspaceCount: workspaces.length }) }
       const messages = /^\/context-web\/api\/threads\/([0-9a-f-]+)\/messages$/i.exec(path)
       if (messages !== null && req.method === 'POST') return sendJson(res, 201, { thread: await store.addMessage(messages[1], (await readJson(req)).text) })
       const thread = /^\/context-web\/api\/threads\/([0-9a-f-]+)$/i.exec(path)

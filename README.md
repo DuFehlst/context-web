@@ -29,9 +29,26 @@ dsh web
 
 ```powershell
 npm install
-npm test        # 上游迁移测试 + 骨架测试
+npm test        # 单元/契约测试（含投影剪枝、线程查询、Markdown 大纲、画布跳转）
+npm run typecheck
 npm run build   # host 语法检查 + client 打包（tsdown → lib/client.js）
 ```
+
+## 行为级走查（E2E）
+
+`npm test` 走不到真实浏览器，而 2026-09-12 的两次故障（白屏、客户端产物仍
+`require` 已移除的 `dsh-client-runtime`）都只在浏览器里炸。`test\e2e\walkthrough.py`
+用真 Chromium 对着**已运行**的 `dsh web` 走查：地图 iframe/卡片、Markdown 导出入口、
+「Agent 画布」标签可选，以及 `/context-web/api/threads/lookup`、`/sessions/sync` 的响应形状。
+它故意不自己起服务（第二个 `dsh web` 会与现有实例共享 profile 抢写画布数据）。
+
+```powershell
+python test/e2e/walkthrough.py --api-only      # 只验接口，无需 token
+python test/e2e/walkthrough.py --token=<token> # token 取自 dsh web 启动时打印的 ?token=
+```
+
+注意：host 侧改动（剪枝、接口瘦身）只在 `dsh web` **启动时**加载，跑之前需重启一次；
+`app.js` 是每次请求现读磁盘，前端改动刷新页面即生效。截图证据落在 `test\e2e\artifacts\`。
 
 ## 已知限制（继承自上游）
 

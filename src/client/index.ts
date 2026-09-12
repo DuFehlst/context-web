@@ -12,6 +12,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-workflow-run/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { AgentCanvasView, type AgentCanvasInjected } from './AgentCanvasView'
 import { apply as applySynapseBridge } from './synapseBridge'
+import { AGENT_CANVAS_LABELS, AGENT_CANVAS_VIEW_ID } from './viewIdentity'
 
 export const inject = ['sessions', 'workspaces', 'slots', 'locale']
 
@@ -21,13 +22,13 @@ export function apply(ctx: ClientContext): void {
 
   // 2) Agent 画布 Tab（注册在「对话」「轨迹」之后）
   ctx.effect(() => ctx.locale.register('agentCanvas', {
-    zh: { 'view.label': 'Agent 画布', refresh: '刷新' },
-    en: { 'view.label': 'Agent Canvas', refresh: 'Refresh' },
+    zh: { 'view.label': AGENT_CANVAS_LABELS.zh, refresh: '刷新' },
+    en: { 'view.label': AGENT_CANVAS_LABELS.en, refresh: 'Refresh' },
   }), 'context-web: locale')
 
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
-    id: 'agent-canvas',
+    id: AGENT_CANVAS_VIEW_ID,
     order: 20,
     locale: 'agentCanvas',
     label: () => ctx.locale.bind('agentCanvas')('view.label'),

@@ -27,6 +27,7 @@
     "build": "node --check index.js && node --check app.js && npm run build:client",
     "build:client": "tsdown",
     "test": "node --test test/*.test.js",
+    "e2e": "python test/e2e/walkthrough.py",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {

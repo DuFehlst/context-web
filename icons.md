@@ -24,6 +24,7 @@
 | 查看完整会话 | home | fill | app.js 详情 |
 | 在 DSH 中打开 | arrow-up-right | fill | app.js 打开 DSH |
 | 新会话 | plus-circle | fill | app.js 新会话按钮 |
+| 导出 Markdown 大纲 | download | fill | app.js 画布控制条（2026-09-12 补，reicon search 查证） |
 
 ## 形态约定
 
