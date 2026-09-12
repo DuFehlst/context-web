@@ -3,3 +3,5 @@ lib/
 *.tgz
 .DS_Store
 .pytest_cache/
+_backups/
+*.bak
