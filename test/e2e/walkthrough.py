@@ -54,6 +54,7 @@ for argument in sys.argv:
         TOKEN = argument.split('=', 1)[1]
 HEADED = '--headed' in sys.argv
 API_ONLY = '--api-only' in sys.argv
+PREFER_STALE = '--prefer-stale' in sys.argv
 ARTIFACTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'artifacts')
 CANVAS_TAB_LABELS = ('Agent 画布', 'Agent Canvas')
 
@@ -214,20 +215,38 @@ def run_browser_checks(play):
                     # Pick a card that belongs to a DIFFERENT DSH session than the
                     # one currently open: a same-session jump would pass trivially
                     # and is exactly the case the map -> canvas fix must handle.
-                    # FrameLocator only resolves locators; JS evaluation needs the
-                    # real Frame, taken from the iframe element handle.
+                    # 2026-09-12: 地图的数据来自插件自己的投影库，可能含 DSH 已不列出的
+                    # 陈旧会话（内核 select() 对它们抛 unknown session）。所以优先挑
+                    # 「侧栏真的列出来」的会话；只有陈旧目标时才验「明确拒绝」。
                     frame_obj = page.locator('.context-web-overlay iframe').element_handle().content_frame()
                     current_session = frame_obj.evaluate('() => (typeof state === "undefined" ? null : (state.currentDsh?.id ?? null))')
-                    other = frame_obj.evaluate(
-                        '() => { if (typeof state === "undefined" || state.workspace === null) return null;'
+                    listed = page.eval_on_selector_all(
+                        '[data-dsh-session-id]',
+                        'els => els.map(e => e.getAttribute("data-dsh-session-id"))')
+                    candidates = frame_obj.evaluate(
+                        '(listed) => { if (typeof state === "undefined" || state.workspace === null) return [];'
                         ' const current = state.currentDsh?.id ?? null;'
-                        ' const thread = (state.workspace.threads ?? []).find(t => t.dshSessionId !== null && t.dshSessionId !== current && (t.messages ?? []).length > 0);'
-                        ' return thread === undefined ? null : { threadId: thread.id, sessionId: thread.dshSessionId }; }')
+                        ' return (state.workspace.threads ?? [])'
+                        '   .filter(t => t.dshSessionId !== null && t.dshSessionId !== current && (t.messages ?? []).length > 0)'
+                        '   .map(t => ({ threadId: t.id, sessionId: t.dshSessionId, listed: listed.includes(t.dshSessionId) }))'
+                        '   .sort((a, b) => Number(b.listed) - Number(a.listed)); }',
+                        listed)
+                    if PREFER_STALE:
+                        # 反证用：优先挑「DSH 不再列出」的陈旧卡，验证桥会明确拒绝
+                        # 而不是把用户丢在空态。
+                        candidates = sorted(candidates, key=lambda c: c['listed'])
+                    # 卡片可能被地图当前视图过滤掉：只在「真的渲染出来」的候选里挑。
+                    other = next(
+                        (c for c in candidates
+                         if frame.locator('.thread-card[data-thread="%s"]' % c['threadId']).count() > 0),
+                        None)
                     if other is None:
-                        skip('E7 map -> canvas jump', 'no card outside the currently open session')
+                        skip('E7 map -> canvas jump',
+                             'no rendered card outside the currently open session (candidates=%d)' % len(candidates))
                     else:
                         check('E7a the jump targets a different session than the open one',
-                              other['sessionId'] != current_session, 'open=%s target=%s' % (current_session, other['sessionId']))
+                              other['sessionId'] != current_session,
+                              'open=%s target=%s listed=%s' % (current_session, other['sessionId'], other['listed']))
                         card = frame.locator('.thread-card[data-thread="%s"]' % other['threadId'])
                         if card.count() == 0:
                             check('E7b the target card is rendered', False, other['threadId'])
@@ -252,16 +271,22 @@ def run_browser_checks(play):
                                 )
                                 check('E7d the jump never strands the user', not stranded,
                                       'map closed with no session open' if stranded else ('closed' if closed else 'map kept open'))
-                                # Poll instead of a fixed wait: the bridge itself
-                                # converges within ~2 s (40 rounds of 50 ms).
-                                selected = False
-                                for _ in range(30):
-                                    tab = canvas_tab_locator(page)
-                                    if tab is not None and tab.get_attribute('aria-selected') == 'true':
-                                        selected = True
-                                        break
-                                    page.wait_for_timeout(250)
-                                check('E7e the Agent 画布 tab ends up selected', selected, 'tabs: %s' % tab_labels(page))
+                                if not other['listed']:
+                                    # 陈旧会话：桥必须明确拒绝（且不收起地图）。
+                                    skip('E7e the Agent 画布 tab ends up selected',
+                                         'target session is not listed by DSH (stale projection entry)')
+                                else:
+                                    # Poll instead of a fixed wait: the bridge itself
+                                    # converges within ~2 s (40 rounds of 50 ms).
+                                    selected = False
+                                    for _ in range(30):
+                                        tab = canvas_tab_locator(page)
+                                        if tab is not None and tab.get_attribute('aria-selected') == 'true':
+                                            selected = True
+                                            break
+                                        page.wait_for_timeout(250)
+                                    check('E7e the Agent 画布 tab ends up selected', selected,
+                                          'tabs: %s' % tab_labels(page))
                 else:
                     skip('E7 map -> canvas jump', 'no card to open')
                     page.locator('.context-web-switch button[data-view="dialog"]').click()

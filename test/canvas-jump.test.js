@@ -34,6 +34,14 @@ test('opens the session, confirms the switch, then closes the map and selects th
   const jump = bridge.slice(bridge.indexOf("'synapse:open-canvas'"), bridge.indexOf("'synapse:activate-session'"))
 
   assert.match(jump, /const target = event\.data\.sessionId/)
+  // 2026-09-12（E2E 实测根因）：地图投影库里的陈旧会话不在 DSH 列表里，内核
+  // select() 对它抛 unknown session —— 先校验再 open，别等 2s 超时。
+  assert.match(jump, /const listed = ctx\.sessions\.list\.getSnapshot\(\)\?\.byId\?\.\[target\]/)
+  assert.match(jump, /if \(listed === undefined\) \{[\s\S]*该会话已不在 DSH 的会话列表里/)
+  assert.ok(
+    jump.indexOf('listed === undefined') < jump.indexOf('ctx.sessions.open(target)'),
+    '陈旧会话校验必须发生在 open 之前',
+  )
   assert.match(jump, /ctx\.sessions\.open\(target\)/)
   // 2026-09-12（E2E E7e）：切换没生效时**不许**收起地图 —— 先确认再收。
   assert.match(jump, /const switchConfirmed = \(\) => ctx\.sessions\.list\.getSnapshot\(\)\.current === target/)

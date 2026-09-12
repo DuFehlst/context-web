@@ -229,10 +229,18 @@ const currentSession = (ctx: any) => {
         }
         if (event.data.type === 'synapse:open-canvas') {
           // 地图 → Agent 画布：先切会话，**确认切过去之后**才收起地图。
-          // 2026-09-12：内核 0.1.5-rc.2 起 sessions.select 对「不在当前列表里的会话」
-          // 会抛 unknown session；旧写法先 close() 再验证，一旦切换没生效就把用户
-          // 留在空态（E2E E7e 实测）。现在失败时保留地图并明确报错。
+          // 2026-09-12 实测根因：地图的数据来自本插件自己的投影库（workspaces.json），
+          // 里面会留下 DSH 已不再列出的陈旧会话；内核 0.1.5-rc.2 的
+          // sessions.select() 对这类 id 直接抛 unknown session。旧写法先 close()
+          // 再验证 → 切换失败就把用户留在「选择工作区开始」空态。
           const target = event.data.sessionId
+          const listed = ctx.sessions.list.getSnapshot()?.byId?.[target]
+          if (listed === undefined) {
+            send('synapse:bridge-error', {
+              message: `该会话已不在 DSH 的会话列表里（可能已归档或删除），无法跳到它的 Agent 画布。`,
+            })
+            return
+          }
           const switchConfirmed = () => ctx.sessions.list.getSnapshot().current === target
           const confirmThenClose = (attempt: number) => {
             if (switchConfirmed()) {
@@ -242,7 +250,7 @@ const currentSession = (ctx: any) => {
             }
             if (attempt >= 40) {
               send('synapse:bridge-error', {
-                message: `无法切到该会话的 Agent 画布：DSH 没有把 ${target} 置为当前会话（可能不在当前工作区列表里），已留在会话地图。`,
+                message: `无法切到该会话的 Agent 画布：DSH 没有把 ${target} 置为当前会话，已留在会话地图。`,
               })
               return
             }
