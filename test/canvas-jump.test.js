@@ -25,30 +25,48 @@ test('keeps one Agent Canvas identity for the registration and the jump', async 
   assert.match(index, /en: \{ 'view\.label': AGENT_CANVAS_LABELS\.en/)
 
   // jump side
-  assert.match(bridge, /import \{ AGENT_CANVAS_TAB_LABELS \} from '\.\/viewIdentity'/)
+  assert.match(bridge, /import \{ AGENT_CANVAS_TAB_LABELS, AGENT_CANVAS_VIEW_ID \} from '\.\/viewIdentity'/)
   assert.match(bridge, /AGENT_CANVAS_TAB_LABELS\.includes\(node\.textContent\?\.trim\(\) \?\? ''\)/)
 })
 
-test('opens the session, closes the map, then selects the canvas tab', async () => {
+test('opens the session, closes the map, then selects the canvas tab for that session', async () => {
   const bridge = await read('src/client/synapseBridge.ts')
   const jump = bridge.slice(bridge.indexOf("'synapse:open-canvas'"), bridge.indexOf("'synapse:activate-session'"))
 
   assert.match(jump, /ctx\.sessions\.open\(event\.data\.sessionId\)/)
   assert.match(jump, /close\(\)/)
-  assert.match(jump, /selectAgentCanvasView\(\)/)
-  assert.ok(jump.indexOf('ctx.sessions.open') < jump.indexOf('selectAgentCanvasView()'))
+  assert.match(jump, /selectAgentCanvasView\(event\.data\.sessionId\)/)
+  assert.ok(jump.indexOf('ctx.sessions.open') < jump.indexOf('selectAgentCanvasView(event.data.sessionId)'))
   assert.match(jump, /bridge-error'[\s\S]*关联的 DSH 会话已不可用/)
 })
 
-test('retries the tab lookup a bounded number of times and reports failure', async () => {
+test('verifies the selection per session instead of clicking whatever tab is rendered', async () => {
+  const bridge = await read('src/client/synapseBridge.ts')
+  const selector = bridge.slice(bridge.indexOf('const CANVAS_STORE_KEY'), bridge.indexOf('const onMessage'))
+
+  // Round 0 must only observe: right after ctx.sessions.open() the DOM still holds
+  // the PREVIOUS session's header, so clicking or reading aria-selected there
+  // selects (or reports) the wrong session's view.
+  assert.match(selector, /const rounds = ctx\.sessions\.list\.getSnapshot\(\)\.current === sessionId \? targetRounds \+ 1 : 0/)
+  assert.match(selector, /if \(rounds >= 1 && canvasViewVerified\(sessionId, clicked\)\) return/)
+  assert.match(selector, /if \(rounds >= 1\) \{/)
+
+  // The per-session truth is the kernel's own persisted view preference; the DOM
+  // signal is only the fallback when that key is unavailable.
+  assert.match(selector, /const CANVAS_STORE_KEY = 'dsh\.conversation'/)
+  assert.match(selector, /querySelectorAll\('\[role="tab"\]'\)/)
+  assert.match(selector, /localStorage\.getItem\(`\$\{CANVAS_STORE_KEY\}\.\$\{sessionId\}`\)/)
+  assert.match(selector, /stored\.view === AGENT_CANVAS_VIEW_ID/)
+  assert.match(selector, /return clicked && tab !== null && tab\.getAttribute\('aria-selected'\) === 'true'/)
+})
+
+test('gives up loudly after a bounded number of rounds', async () => {
   const bridge = await read('src/client/synapseBridge.ts')
   const selector = bridge.slice(bridge.indexOf('const selectAgentCanvasView'), bridge.indexOf('const onMessage'))
 
-  assert.match(selector, /querySelectorAll\('\[role="tab"\]'\)/)
-  assert.match(selector, /if \(tab instanceof HTMLElement\) \{\s*tab\.click\(\)\s*return\s*\}/)
-  assert.match(selector, /if \(attempt >= 20\)/)
-  assert.match(selector, /setTimeout\(\(\) => selectAgentCanvasView\(attempt \+ 1\), 50\)/)
-  assert.match(selector, /bridge-error'[\s\S]*Agent 画布标签未就绪/)
+  assert.match(selector, /if \(attempt >= 40\)/)
+  assert.match(selector, /setTimeout\(\(\) => selectAgentCanvasView\(sessionId, attempt \+ 1, rounds, clicked\), 50\)/)
+  assert.match(selector, /bridge-error'[\s\S]*未能确认切到 Agent 画布标签/)
 })
 
 test('offers the jump on a session detail and posts the linked DSH session', async () => {

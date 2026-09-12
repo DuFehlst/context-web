@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 
@@ -259,7 +259,14 @@ export class WorkspaceStore {
       const parsed = JSON.parse(await readFile(this.dataFile, 'utf8'))
       const { state, migrated } = normalizeState(parsed)
       this.state = state
-      if (migrated) await this.save()
+      // A migration (runtime-context filtering, tool-card folding, payload
+      // pruning) rewrites the file in place and the pruned tails cannot be
+      // re-derived from the projection. Keep one pre-migration copy so the
+      // rewrite is never silent and is recoverable.
+      if (migrated) {
+        await copyFile(this.dataFile, `${this.dataFile}.bak`).catch(() => {})
+        await this.save()
+      }
     } catch (error) {
       if (error?.code !== 'ENOENT') throw new Error(`context-web: cannot read ${this.dataFile}: ${error.message}`)
       this.state = { version: 4, hiddenSessionIds: [], workspaces: [] }
@@ -708,10 +715,23 @@ function noteProjection(kind, text) {
   return { kind, text: `${normalized.slice(0, MAX_PROJECTION_LENGTH)}${PROJECTION_TRUNCATED_SUFFIX}` }
 }
 
-/** Cap one tool payload field; non-strings are left untouched. */
+/** Cap one tool payload field; a structured value becomes bounded JSON text so
+ * the canvas can render it (it used to render as "[object Object]") and the
+ * data file stays bounded. */
 function capProcessText(value) {
-  if (typeof value !== 'string' || value.length <= MAX_PROCESS_LENGTH) return value
-  return `${value.slice(0, MAX_PROCESS_LENGTH)}${PROJECTION_TRUNCATED_SUFFIX}`
+  if (value === null || value === undefined) return value
+  const text = typeof value === 'string' ? value : jsonText(value)
+  if (text.length <= MAX_PROCESS_LENGTH) return text
+  return `${text.slice(0, MAX_PROCESS_LENGTH)}${PROJECTION_TRUNCATED_SUFFIX}`
+}
+
+function jsonText(value) {
+  try {
+    const text = JSON.stringify(value)
+    return typeof text === 'string' ? text : String(value)
+  } catch {
+    return String(value)
+  }
 }
 
 /**

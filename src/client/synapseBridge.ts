@@ -1,6 +1,6 @@
 // 会话地图桥（迁移自 dsh-synapse client 半区，MIT，Copyright (c) 2026 liangmianya）。
 // 线协议消息类型保留 'synapse:' 前缀；命名空间（路由/数据文件/localStorage/CSS 类）已改为 context-web。
-import { AGENT_CANVAS_TAB_LABELS } from './viewIdentity'
+import { AGENT_CANVAS_TAB_LABELS, AGENT_CANVAS_VIEW_ID } from './viewIdentity'
 const currentSession = (ctx: any) => {
       const snapshot = ctx.sessions.list.getSnapshot()
       const id = snapshot.current
@@ -146,19 +146,46 @@ const currentSession = (ctx: any) => {
       }
       // 会话头自己拥有 View 选择权（0.1.5 未导出 select API），它渲染的 tab 按钮
       // 就是唯一公开入口：点击即走内核的 selectView → activateView + setView，
-      // 与用户手点完全同一条路径。标签要等新会话渲染出来，故做有界重试。
-      const selectAgentCanvasView = (attempt = 0) => {
+      // 与用户手点完全同一条路径。
+      //
+      // 难点是「按结果收敛」而不是「点一下就算」：ctx.sessions.open() 之后 React 还没
+      // 重渲染，此刻 DOM 里仍是上一个会话的表头——此时点击只会改上一个会话的视图，
+      // 读 aria-selected 也会误判成已经选中。所以：
+      //   第 0 轮只观察（记录目标会话是否已成为 current）；
+      //   第 ≥1 轮（≥50ms，重渲染早已完成）才判定/点击；
+      //   判定优先读目标会话自己的视图偏好——内核 per-session store 持久化在
+      //   `dsh.conversation.<sessionId>`（见 dsh-client-ui-conversation 的
+      //   readConversationViewPreference），这是唯一「按会话」可验证的信号；
+      //   读不到（内核换键/无 localStorage）才退到「点过 + aria-selected」。
+      const CANVAS_STORE_KEY = 'dsh.conversation'
+      const findAgentCanvasTab = (): HTMLElement | null => {
         const tabs = Array.from(document.querySelectorAll('[role="tab"]'))
         const tab = tabs.find(node => AGENT_CANVAS_TAB_LABELS.includes(node.textContent?.trim() ?? ''))
-        if (tab instanceof HTMLElement) {
-          tab.click()
+        return tab instanceof HTMLElement ? tab : null
+      }
+      const canvasViewVerified = (sessionId: string, clicked: boolean): boolean => {
+        try {
+          const stored = JSON.parse(localStorage.getItem(`${CANVAS_STORE_KEY}.${sessionId}`) ?? 'null')
+          if (stored !== null && typeof stored === 'object' && 'view' in stored) return stored.view === AGENT_CANVAS_VIEW_ID
+        } catch { /* 内核换键或隐私模式：走下面的 DOM 信号 */ }
+        const tab = findAgentCanvasTab()
+        return clicked && tab !== null && tab.getAttribute('aria-selected') === 'true'
+      }
+      const selectAgentCanvasView = (sessionId: string, attempt = 0, targetRounds = 0, clicked = false) => {
+        const rounds = ctx.sessions.list.getSnapshot().current === sessionId ? targetRounds + 1 : 0
+        if (rounds >= 1 && canvasViewVerified(sessionId, clicked)) return
+        if (rounds >= 1) {
+          const tab = findAgentCanvasTab()
+          if (tab !== null && tab.getAttribute('aria-selected') !== 'true') {
+            tab.click()
+            clicked = true
+          }
+        }
+        if (attempt >= 40) {
+          send('synapse:bridge-error', { message: '未能确认切到 Agent 画布标签，已在会话中打开' })
           return
         }
-        if (attempt >= 20) {
-          send('synapse:bridge-error', { message: 'Agent 画布标签未就绪，已在会话中打开' })
-          return
-        }
-        window.setTimeout(() => selectAgentCanvasView(attempt + 1), 50)
+        window.setTimeout(() => selectAgentCanvasView(sessionId, attempt + 1, rounds, clicked), 50)
       }
       const onMessage = (event: MessageEvent) => {
         if (event.origin !== location.origin || event.data?.source !== 'context-web') return
@@ -200,7 +227,7 @@ const currentSession = (ctx: any) => {
           // 地图 → Agent 画布：先切会话并收起地图，再把该会话的会话区切到画布标签。
           try { ctx.sessions.open(event.data.sessionId) } catch { return send('synapse:bridge-error', { message: '关联的 DSH 会话已不可用' }) }
           close()
-          selectAgentCanvasView()
+          selectAgentCanvasView(event.data.sessionId)
           return
         }
         if (event.data.type === 'synapse:activate-session') {

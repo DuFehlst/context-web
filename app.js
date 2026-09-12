@@ -170,6 +170,8 @@ function markdownOutline(workspace) {
     for (const child of byParent.get(thread.id) ?? []) walk(child, depth + 1)
   }
   for (const root of byParent.get(null) ?? []) walk(root, 0)
+  // 血缘在 DSH 里是树，但真出现环/断链时不能让整条线程消失：兜底把没访问到的当根再走一遍。
+  for (const thread of threads) walk(thread, 0)
   return `${lines.join('\n')}\n`
 }
 
@@ -278,11 +280,13 @@ function workspaceChoices() {
 async function threadsForDshWorkspace(workspace) {
   if (workspace.sessionIds.length === 0) return []
   const requested = new Set(workspace.sessionIds)
-  // Ask the server for just these sessions' canvas nodes. Fetching every
-  // workspace's full detail to filter locally pulled multi-MB payloads the map
-  // never rendered (白屏诊断 P2-6).
-  const body = await api('/context-web/api/threads/lookup', { method: 'POST', body: JSON.stringify({ sessionIds: workspace.sessionIds }) })
-  return body.threads.filter(thread => requested.has(thread.dshSessionId))
+  // 先只问服务端要这几个会话的画布节点：打开一个工作区不再并发拉全部工作区的
+  // 全量详情（白屏诊断 P2-6）。宿主还是旧版、没有该接口时回退到旧的全量拉取，
+  // 这样「前端已更新、宿主待重启」的窗口里地图不会打不开。
+  const lookup = await api('/context-web/api/threads/lookup', { method: 'POST', body: JSON.stringify({ sessionIds: workspace.sessionIds }) }).catch(() => null)
+  if (lookup !== null) return lookup.threads.filter(thread => requested.has(thread.dshSessionId))
+  const projections = await Promise.all(state.summaries.map(summary => api(`/context-web/api/workspaces/${summary.id}`)))
+  return projections.flatMap(projection => projection.workspace.threads.filter(thread => requested.has(thread.dshSessionId)))
 }
 
 async function openDshWorkspace(id, { renderAfter = true, preserveCanvasCamera = false } = {}) {

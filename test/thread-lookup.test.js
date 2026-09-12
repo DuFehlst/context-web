@@ -44,12 +44,17 @@ test('rejects a malformed sessionIds argument instead of returning everything', 
   await assert.rejects(() => store.lookupThreads([1, 2]), /sessionIds/)
 })
 
-test('the map asks for one workspace worth of threads instead of every workspace', async () => {
+test('the map asks for one workspace worth of threads, with a fallback for a pre-change host', async () => {
   const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
   const lookup = app.slice(app.indexOf('async function threadsForDshWorkspace'), app.indexOf('async function openDshWorkspace'))
   assert.match(lookup, /\/context-web\/api\/threads\/lookup/)
   assert.match(lookup, /method: 'POST'/)
-  assert.doesNotMatch(lookup, /state\.summaries\.map/)
+  // The slim call is the primary path; the legacy full fetch survives only as a
+  // fallback (`catch(() => null)`) so a front-end update landing before the host
+  // restart cannot break the map with a 404.
+  assert.match(lookup, /\.catch\(\(\) => null\)/)
+  assert.ok(lookup.indexOf('threads/lookup') < lookup.indexOf('state.summaries.map'), 'lookup runs first')
+  assert.ok(lookup.indexOf('.catch(() => null)') < lookup.indexOf('state.summaries.map'), 'legacy fetch only in the fallback')
 })
 
 test('exposes the lookup route and trims the sync acknowledgement', async () => {

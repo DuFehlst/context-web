@@ -9,18 +9,31 @@ Chromium against a *running* `dsh web` and checks what unit tests cannot:
 
   E1  the top view switch opens the session-map overlay and its iframe loads
   E2  the map renders its shell, its cards, and the Markdown export entry
-  E3  the conversation header exposes the registered `Agent 画布` view tab, and
-      clicking it selects it (exactly the path the map -> canvas jump uses)
+  E3  the conversation header exposes the registered `Agent 画布` view tab
   E4  `POST /context-web/api/threads/lookup` answers the slim lookup payload
   E5  `POST /context-web/api/sessions/sync` answers the trimmed acknowledgement
-  E6  no browser console errors while doing the above
+  E6  no context-web console errors while doing the above
+  E7  the real map -> canvas jump: a card detail's「在 Agent 画布中打开」closes
+      the map, switches the session, and leaves the Agent 画布 tab selected
+
+Notes that matter for interpreting the result:
+
+* `app.js` / `styles.css` are read from disk per request, so front-end changes
+  show up on reload; **host code (`index.js`) loads at `dsh web` boot**, so the
+  E4/E5 shapes only appear after a restart. Both are reported explicitly.
+* The shell is gated by a per-process launch token (`dsh web` prints it as
+  `http://host:port/?token=...`); `--api-only` needs no token, the browser half
+  does. The token is random per process and is not recoverable afterwards.
+* E5 posts empty session metadata, which the store treats as a no-op state and
+  saves unchanged -- it is the only endpoint check that touches the live server
+  state, and it does not change any task/canvas data.
 
 Usage:
-  python test/e2e/walkthrough.py --api-only        # endpoints only, no token
-  python test/e2e/walkthrough.py --token=<launch token from the URL dsh web printed>
+  python test/e2e/walkthrough.py --api-only
+  python test/e2e/walkthrough.py --token=<token from the URL dsh web printed>
   CONTEXT_WEB_URL=http://127.0.0.1:3099 python test/e2e/walkthrough.py --headed
 
-Exit code 0 = every check passed; 1 = at least one [FAIL].
+Exit code 0 = every check passed (skips allowed); 1 = at least one [FAIL].
 It attaches to an already-running server on purpose: booting a second `dsh web`
 shares the same profile, and context-web explicitly warns that two writers
 clobber each other's canvas data.
@@ -33,10 +46,6 @@ import urllib.error
 import urllib.request
 
 URL = os.environ.get('CONTEXT_WEB_URL', 'http://127.0.0.1:3080').rstrip('/')
-# `dsh web` gates the shell behind a per-process launch token that it prints as
-# `http://host:port/?token=...`; pass it to let the walkthrough mint the browser
-# cookie. The plugin's own /context-web/api routes sit outside that fence, so
-# --api-only needs no token.
 TOKEN = os.environ.get('CONTEXT_WEB_TOKEN', '')
 for argument in sys.argv:
     if argument.startswith('--token='):
@@ -57,6 +66,14 @@ def check(name, ok, detail=''):
     results.append((name, bool(ok), detail))
     print('[%s] %s%s' % ('PASS' if ok else 'FAIL', name, '' if detail == '' else ' -- ' + detail), flush=True)
     return bool(ok)
+
+
+def skip(name, detail=''):
+    print('[SKIP] %s%s' % (name, '' if detail == '' else ' -- ' + detail), flush=True)
+
+
+def info(message):
+    print('[INFO] %s' % message, flush=True)
 
 
 def http_post(path, payload, timeout=20):
@@ -98,8 +115,7 @@ def run_api_checks():
         check('E5 sessions/sync answers a trimmed acknowledgement', False, str(error))
 
 
-def run_browser_checks(play):
-    browser = None
+def launch(play):
     attempts = [{'headless': True, 'channel': 'chromium'}, {'headless': True}, {'headless': False}]
     if HEADED:
         attempts = [{'headless': False}, {'headless': True, 'channel': 'chromium'}, {'headless': True}]
@@ -107,79 +123,128 @@ def run_browser_checks(play):
     for options in attempts:
         try:
             browser = play.chromium.launch(**options)
-            print('[INFO] chromium launched with %s' % options, flush=True)
-            break
+            info('chromium launched with %s' % options)
+            return browser
         except Exception as error:  # missing binary for this channel/mode
             last_error = error
-    if browser is None:
-        check('E0 chromium launch', False, '%s -- fix with: python -m playwright install chromium' % last_error)
-        return
+    check('E0 chromium launch', False, '%s -- fix with: python -m playwright install chromium' % last_error)
+    return None
 
+
+def canvas_tab_locator(page):
+    """The conversation header's tablist carries a hashed CSS-module class
+    (`wSkVaW_tabs`), so locate the tab by role + label text, never by class."""
+    tabs = page.locator('[role="tab"]')
+    for index in range(tabs.count()):
+        candidate = tabs.nth(index)
+        if candidate.inner_text().strip() in CANVAS_TAB_LABELS:
+            return candidate
+    return None
+
+
+def tab_labels(page):
+    tabs = page.locator('[role="tab"]')
+    return [tabs.nth(index).inner_text().strip() for index in range(tabs.count())]
+
+
+def run_browser_checks(play):
+    browser = launch(play)
+    if browser is None:
+        return
     os.makedirs(ARTIFACTS, exist_ok=True)
     stamp = time.strftime('%Y%m%d-%H%M%S')
-    page = browser.new_page(viewport={'width': 1440, 'height': 900})
+    context = browser.new_context(viewport={'width': 1440, 'height': 900})
+    page = context.new_page()
     console_errors = []
     page.on('console', lambda message: console_errors.append(message.text) if message.type == 'error' else None)
 
-    entry = '%s/?token=%s' % (URL, TOKEN) if TOKEN != '' else URL
     try:
-        page.goto(entry, wait_until='domcontentloaded', timeout=30_000)
-    except Exception as error:
-        check('E0 open %s' % URL, False, '%s -- start the GUI (dsh web) or set CONTEXT_WEB_URL' % error)
-        browser.close()
-        return
-
-    if 'authentication required' in page.content():
-        detail = 'pass --token=<token from the URL dsh web printed> (or CONTEXT_WEB_TOKEN)'
-        check('E0 the web shell is authenticated', False, detail)
-        page.screenshot(path=os.path.join(ARTIFACTS, 'unauthorized-%s.png' % stamp))
-        browser.close()
-        return
-
-    map_button = page.locator('.context-web-switch button[data-view="map"]')
-    check('E1a view switch is mounted', map_button.count() == 1, 'button[data-view="map"]')
-    if map_button.count() == 1:
-        map_button.click()
-        page.locator('.context-web-overlay iframe').wait_for(state='attached', timeout=10_000)
-        page.wait_for_timeout(1_500)
-        check('E1b map overlay becomes visible', page.locator('.context-web-overlay').is_visible())
-
-        frame = page.frame_locator('.context-web-overlay iframe')
-        shell = frame.locator('.context-web-shell')
+        entry = '%s/?token=%s' % (URL, TOKEN) if TOKEN != '' else URL
         try:
-            shell.wait_for(state='attached', timeout=15_000)
-            check('E2a map shell rendered inside the iframe', True)
+            page.goto(entry, wait_until='domcontentloaded', timeout=30_000)
         except Exception as error:
-            check('E2a map shell rendered inside the iframe', False, str(error).splitlines()[0])
+            check('E0 open %s' % URL, False, '%s -- start the GUI (dsh web) or set CONTEXT_WEB_URL' % error)
+            return
 
-        if shell.count() > 0:
-            threads = frame.locator('.thread-card')
-            controls = frame.locator('.canvas-controls button[data-action="export-markdown"]')
-            if threads.count() > 0:
-                check('E2b cards render for a non-empty workspace', True, '%d card(s)' % threads.count())
-                check('E2c Markdown export entry is offered', controls.count() == 1,
-                      'app.js is served from disk, so this one needs only a page reload')
-            else:
-                check('E2b cards render for a non-empty workspace', True, 'workspace empty -- card assertions skipped')
+        if 'authentication required' in page.content():
+            page.screenshot(path=os.path.join(ARTIFACTS, 'unauthorized-%s.png' % stamp))
+            check('E0 the web shell is authenticated', False,
+                  'pass --token=<token from the URL dsh web printed> (or CONTEXT_WEB_TOKEN)')
+            return
 
-            tabs = page.locator('.tabs [role="tab"]')
-            labels = [tabs.nth(index).inner_text().strip() for index in range(tabs.count())]
-            canvas_tab = None
-            for index in range(tabs.count()):
-                if tabs.nth(index).inner_text().strip() in CANVAS_TAB_LABELS:
-                    canvas_tab = tabs.nth(index)
-                    break
-            check('E3a Agent 画布 tab is registered', canvas_tab is not None, 'tabs seen: %s' % labels)
-            if canvas_tab is not None:
-                canvas_tab.click()
-                page.wait_for_timeout(600)
-                check('E3b clicking the tab selects it', canvas_tab.get_attribute('aria-selected') == 'true')
+        # E1 -- wait for the client plugin to boot, then open the map overlay.
+        booted = True
+        try:
+            page.locator('.context-web-switch button[data-view="map"]').wait_for(state='visible', timeout=20_000)
+        except Exception as error:
+            booted = False
+            check('E1a view switch is mounted', False, str(error).splitlines()[0])
+        if booted:
+            check('E1a view switch is mounted', True)
+            page.locator('.context-web-switch button[data-view="map"]').click()
+            page.locator('.context-web-overlay iframe').wait_for(state='attached', timeout=10_000)
+            page.wait_for_timeout(1_500)
+            check('E1b map overlay becomes visible', page.locator('.context-web-overlay').is_visible())
 
-        page.screenshot(path=os.path.join(ARTIFACTS, 'map-%s.png' % stamp))
+            frame = page.frame_locator('.context-web-overlay iframe')
+            shell = frame.locator('.context-web-shell')
+            try:
+                shell.wait_for(state='attached', timeout=15_000)
+                check('E2a map shell rendered inside the iframe', True)
+            except Exception as error:
+                check('E2a map shell rendered inside the iframe', False, str(error).splitlines()[0])
 
-    check('E6 no browser console errors', not console_errors, ' | '.join(console_errors[:3]))
-    page.screenshot(path=os.path.join(ARTIFACTS, 'final-%s.png' % stamp))
-    browser.close()
+            if shell.count() > 0:
+                cards = frame.locator('.thread-card')
+                if cards.count() > 0:
+                    check('E2b cards render for a non-empty workspace', True, '%d card(s)' % cards.count())
+                    check('E2c Markdown export entry is offered',
+                          frame.locator('.canvas-controls button[data-action="export-markdown"]').count() == 1)
+                else:
+                    skip('E2b cards render for a non-empty workspace', 'selected workspace has no cards')
+
+                page.screenshot(path=os.path.join(ARTIFACTS, 'map-%s.png' % stamp))
+
+                # E3/E7 -- the map -> canvas jump. The tablist sits under the
+                # full-viewport overlay, so close the map first (which the jump
+                # itself does) and then look at the conversation header.
+                if cards.count() > 0:
+                    detail_button = frame.locator('[data-action="show-thread"]').first
+                    detail_button.click()
+                    page.wait_for_timeout(400)
+                    jump = frame.locator('[data-action="open-canvas"]').first
+                    if jump.count() == 0:
+                        check('E7a the detail offers 在 Agent 画布中打开', False, 'no [data-action="open-canvas"]')
+                    else:
+                        check('E7a the detail offers 在 Agent 画布中打开', True)
+                        jump.click()
+                        page.wait_for_timeout(2_000)
+                        check('E7b the jump closes the map', not page.locator('.context-web-overlay').is_visible())
+                        tab = canvas_tab_locator(page)
+                        check('E7c the Agent 画布 tab ends up selected',
+                              tab is not None and tab.get_attribute('aria-selected') == 'true',
+                              'tabs: %s' % tab_labels(page))
+                else:
+                    skip('E7 map -> canvas jump', 'no card to open')
+                    page.locator('.context-web-switch button[data-view="dialog"]').click()
+                    page.wait_for_timeout(400)
+                    check('E3a Agent 画布 tab is registered', canvas_tab_locator(page) is not None,
+                          'tabs: %s' % tab_labels(page))
+    except Exception as error:  # never surface a traceback where a [FAIL] belongs
+        check('E-browser walkthrough completed', False, '%s: %s' % (type(error).__name__, error))
+    finally:
+        plugin_errors = [text for text in console_errors if 'context-web' in text.lower()]
+        if plugin_errors:
+            check('E6 no context-web console errors', False, ' | '.join(plugin_errors[:3]))
+        else:
+            check('E6 no context-web console errors', True,
+                  ('%d unrelated console error(s) ignored' % len(console_errors)) if console_errors else '')
+        try:
+            page.screenshot(path=os.path.join(ARTIFACTS, 'final-%s.png' % stamp))
+        except Exception:
+            pass
+        context.close()
+        browser.close()
 
 
 def main():

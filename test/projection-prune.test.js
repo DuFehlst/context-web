@@ -71,6 +71,24 @@ test('prunes an oversized tool payload already persisted by an earlier version',
   const onDisk = JSON.parse(await readFile(dataFile, 'utf8'))
   assert.equal(onDisk.threads, undefined)
   assert.equal(onDisk.workspaces[0].threads[0].messages[1].process[0].result.length, CAP + SUFFIX.length)
+
+  // The rewrite destroys the pruned tails for good, so keep one recoverable copy.
+  const backup = JSON.parse(await readFile(`${dataFile}.bak`, 'utf8'))
+  assert.equal(backup.workspaces[0].threads[0].messages[1].process[0].result.length, LONG.length)
+})
+
+test('stores a structured tool payload as bounded text instead of passing it through', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-context-web-prune-structured-'))
+  const store = new WorkspaceStore(join(directory, 'state.json'))
+  const session = toolSession()
+  session.events[2] = { type: 'tool/call', seq: 2, time: 3, data: { turn: 1, step: 1, callId: 'c1', name: 'read', arguments: { path: 'a.txt', blob: 'z'.repeat(CAP + 100) } } }
+  await store.projectSession(session)
+
+  const [workspace] = await store.list()
+  const [entry] = (await store.get(workspace.id)).threads[0].messages[1].process
+  assert.equal(typeof entry.arguments, 'string')
+  assert.ok(entry.arguments.startsWith('{"path":"a.txt"'))
+  assert.equal(entry.arguments.length, CAP + SUFFIX.length)
 })
 
 test('does not rewrite the data file again once every payload is inside the cap', async () => {

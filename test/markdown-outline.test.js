@@ -69,7 +69,7 @@ test('keeps one line per message and truncates a long one', async () => {
   assert.equal(text.split('\n').filter(line => line.startsWith('- **')).length, 1)
 })
 
-test('ignores a dangling parent pointer and never loops on a cycle', async () => {
+test('ignores a dangling parent pointer and still exports a cyclic pair once', async () => {
   const { markdownOutline } = await loadOutline()
   const dangling = markdownOutline({ title: 'w', threads: [{ id: 't1', title: '孤儿', parentId: 'missing', messages: [] }] })
   assert.ok(dangling.includes('## 孤儿'), 'a thread whose parent is gone is still exported as a root')
@@ -81,8 +81,9 @@ test('ignores a dangling parent pointer and never loops on a cycle', async () =>
       { id: 'b', title: '乙', parentId: 'a', messages: [] },
     ],
   })
-  // 血缘在 DSH 里是树；真出现环时只要求「不死循环、不重复导出」。
-  assert.equal(cyclic.split('\n').filter(line => line.startsWith('## ')).length, 0)
+  // 血缘在 DSH 里是树；真出现环时既不能死循环，也不能把线程整条丢掉。
+  assert.equal(cyclic.split('\n').filter(line => line.startsWith('## ')).length, 1)
+  assert.ok(cyclic.includes('## ') && (cyclic.includes('甲') || cyclic.includes('乙')))
 })
 
 test('returns nothing for a missing workspace and a safe file name', async () => {
