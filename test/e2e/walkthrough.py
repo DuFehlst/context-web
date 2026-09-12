@@ -214,8 +214,11 @@ def run_browser_checks(play):
                     # Pick a card that belongs to a DIFFERENT DSH session than the
                     # one currently open: a same-session jump would pass trivially
                     # and is exactly the case the map -> canvas fix must handle.
-                    current_session = frame.evaluate('() => (typeof state === "undefined" ? null : (state.currentDsh?.id ?? null))')
-                    other = frame.evaluate(
+                    # FrameLocator only resolves locators; JS evaluation needs the
+                    # real Frame, taken from the iframe element handle.
+                    frame_obj = page.locator('.context-web-overlay iframe').element_handle().content_frame()
+                    current_session = frame_obj.evaluate('() => (typeof state === "undefined" ? null : (state.currentDsh?.id ?? null))')
+                    other = frame_obj.evaluate(
                         '() => { if (typeof state === "undefined" || state.workspace === null) return null;'
                         ' const current = state.currentDsh?.id ?? null;'
                         ' const thread = (state.workspace.threads ?? []).find(t => t.dshSessionId !== null && t.dshSessionId !== current && (t.messages ?? []).length > 0);'
@@ -229,12 +232,15 @@ def run_browser_checks(play):
                         if card.count() == 0:
                             check('E7b the target card is rendered', False, other['threadId'])
                         else:
-                            card.locator('[data-action="show-thread"]').first.click()
+                            # The card sits inside the full-viewport overlay iframe;
+                            # Playwright's hit-testing can call it "outside of the
+                            # viewport", so dispatch the click from inside the frame.
+                            card.locator('[data-action="show-thread"]').first.evaluate('el => el.click()')
                             page.wait_for_timeout(400)
                             jump = frame.locator('[data-action="open-canvas"]').first
                             check('E7c the detail offers 在 Agent 画布中打开', jump.count() > 0)
                             if jump.count() > 0:
-                                jump.click()
+                                jump.evaluate('el => el.click()')
                                 check('E7d the jump closes the map', not page.locator('.context-web-overlay').is_visible())
                                 # Poll instead of a fixed wait: the bridge itself
                                 # converges within ~2 s (40 rounds of 50 ms).
