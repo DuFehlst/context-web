@@ -29,15 +29,26 @@ test('keeps one Agent Canvas identity for the registration and the jump', async 
   assert.match(bridge, /AGENT_CANVAS_TAB_LABELS\.includes\(node\.textContent\?\.trim\(\) \?\? ''\)/)
 })
 
-test('opens the session, closes the map, then selects the canvas tab for that session', async () => {
+test('opens the session, confirms the switch, then closes the map and selects the canvas tab', async () => {
   const bridge = await read('src/client/synapseBridge.ts')
   const jump = bridge.slice(bridge.indexOf("'synapse:open-canvas'"), bridge.indexOf("'synapse:activate-session'"))
 
-  assert.match(jump, /ctx\.sessions\.open\(event\.data\.sessionId\)/)
-  assert.match(jump, /close\(\)/)
-  assert.match(jump, /selectAgentCanvasView\(event\.data\.sessionId\)/)
-  assert.ok(jump.indexOf('ctx.sessions.open') < jump.indexOf('selectAgentCanvasView(event.data.sessionId)'))
-  assert.match(jump, /bridge-error'[\s\S]*关联的 DSH 会话已不可用/)
+  assert.match(jump, /const target = event\.data\.sessionId/)
+  assert.match(jump, /ctx\.sessions\.open\(target\)/)
+  // 2026-09-12（E2E E7e）：切换没生效时**不许**收起地图 —— 先确认再收。
+  assert.match(jump, /const switchConfirmed = \(\) => ctx\.sessions\.list\.getSnapshot\(\)\.current === target/)
+  assert.ok(
+    jump.indexOf('ctx.sessions.open(target)') < jump.indexOf('confirmThenClose(0)'),
+    '确认轮询必须在 open 之后启动',
+  )
+  // 「确认 → 收起 → 点画布标签」必须是一个连贯分支（注释里也出现过 close() 字样，
+  // 所以用结构断言而不是 indexOf 排序）。
+  assert.match(
+    jump,
+    /if \(switchConfirmed\(\)\) \{\s*close\(\)\s*selectAgentCanvasView\(target\)\s*return\s*\}/,
+  )
+  assert.match(jump, /bridge-error'[\s\S]*关联的 DSH 会话已不可用，已留在会话地图/)
+  assert.match(jump, /DSH 没有把 \$\{target\} 置为当前会话/)
 })
 
 test('verifies the selection per session instead of clicking whatever tab is rendered', async () => {
