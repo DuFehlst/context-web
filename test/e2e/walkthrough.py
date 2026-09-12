@@ -14,7 +14,9 @@ Chromium against a *running* `dsh web` and checks what unit tests cannot:
   E5  `POST /context-web/api/sessions/sync` answers the trimmed acknowledgement
   E6  no context-web console errors while doing the above
   E7  the real map -> canvas jump: a card detail's「在 Agent 画布中打开」closes
-      the map, switches the session, and leaves the Agent 画布 tab selected
+      the map, switches the session, and leaves the Agent 画布 tab selected --
+      driven from a card whose DSH session is NOT the one currently open, so a
+      same-session no-op cannot pass it (E7a picks it, E7e polls the tab)
 
 Notes that matter for interpreting the result:
 
@@ -209,21 +211,41 @@ def run_browser_checks(play):
                 # full-viewport overlay, so close the map first (which the jump
                 # itself does) and then look at the conversation header.
                 if cards.count() > 0:
-                    detail_button = frame.locator('[data-action="show-thread"]').first
-                    detail_button.click()
-                    page.wait_for_timeout(400)
-                    jump = frame.locator('[data-action="open-canvas"]').first
-                    if jump.count() == 0:
-                        check('E7a the detail offers 在 Agent 画布中打开', False, 'no [data-action="open-canvas"]')
+                    # Pick a card that belongs to a DIFFERENT DSH session than the
+                    # one currently open: a same-session jump would pass trivially
+                    # and is exactly the case the map -> canvas fix must handle.
+                    current_session = frame.evaluate('() => (typeof state === "undefined" ? null : (state.currentDsh?.id ?? null))')
+                    other = frame.evaluate(
+                        '() => { if (typeof state === "undefined" || state.workspace === null) return null;'
+                        ' const current = state.currentDsh?.id ?? null;'
+                        ' const thread = (state.workspace.threads ?? []).find(t => t.dshSessionId !== null && t.dshSessionId !== current && (t.messages ?? []).length > 0);'
+                        ' return thread === undefined ? null : { threadId: thread.id, sessionId: thread.dshSessionId }; }')
+                    if other is None:
+                        skip('E7 map -> canvas jump', 'no card outside the currently open session')
                     else:
-                        check('E7a the detail offers 在 Agent 画布中打开', True)
-                        jump.click()
-                        page.wait_for_timeout(2_000)
-                        check('E7b the jump closes the map', not page.locator('.context-web-overlay').is_visible())
-                        tab = canvas_tab_locator(page)
-                        check('E7c the Agent 画布 tab ends up selected',
-                              tab is not None and tab.get_attribute('aria-selected') == 'true',
-                              'tabs: %s' % tab_labels(page))
+                        check('E7a the jump targets a different session than the open one',
+                              other['sessionId'] != current_session, 'open=%s target=%s' % (current_session, other['sessionId']))
+                        card = frame.locator('.thread-card[data-thread="%s"]' % other['threadId'])
+                        if card.count() == 0:
+                            check('E7b the target card is rendered', False, other['threadId'])
+                        else:
+                            card.locator('[data-action="show-thread"]').first.click()
+                            page.wait_for_timeout(400)
+                            jump = frame.locator('[data-action="open-canvas"]').first
+                            check('E7c the detail offers 在 Agent 画布中打开', jump.count() > 0)
+                            if jump.count() > 0:
+                                jump.click()
+                                check('E7d the jump closes the map', not page.locator('.context-web-overlay').is_visible())
+                                # Poll instead of a fixed wait: the bridge itself
+                                # converges within ~2 s (40 rounds of 50 ms).
+                                selected = False
+                                for _ in range(30):
+                                    tab = canvas_tab_locator(page)
+                                    if tab is not None and tab.get_attribute('aria-selected') == 'true':
+                                        selected = True
+                                        break
+                                    page.wait_for_timeout(250)
+                                check('E7e the Agent 画布 tab ends up selected', selected, 'tabs: %s' % tab_labels(page))
                 else:
                     skip('E7 map -> canvas jump', 'no card to open')
                     page.locator('.context-web-switch button[data-view="dialog"]').click()

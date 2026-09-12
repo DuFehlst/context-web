@@ -148,44 +148,48 @@ const currentSession = (ctx: any) => {
       // 就是唯一公开入口：点击即走内核的 selectView → activateView + setView，
       // 与用户手点完全同一条路径。
       //
-      // 难点是「按结果收敛」而不是「点一下就算」：ctx.sessions.open() 之后 React 还没
-      // 重渲染，此刻 DOM 里仍是上一个会话的表头——此时点击只会改上一个会话的视图，
-      // 读 aria-selected 也会误判成已经选中。所以：
-      //   第 0 轮只观察（记录目标会话是否已成为 current）；
-      //   第 ≥1 轮（≥50ms，重渲染早已完成）才判定/点击；
-      //   判定优先读目标会话自己的视图偏好——内核 per-session store 持久化在
-      //   `dsh.conversation.<sessionId>`（见 dsh-client-ui-conversation 的
-      //   readConversationViewPreference），这是唯一「按会话」可验证的信号；
-      //   读不到（内核换键/无 localStorage）才退到「点过 + aria-selected」。
+      // 难点是「按结果收敛」而不是「点一下就算」：ctx.sessions.open() 是同步的，
+      // 但 DOM 里的会话头要等 React 重渲染才换成目标会话——在那一刻之前，DOM 里仍是
+      // 上一个会话的表头，点它会改写**上一个会话**的视图偏好，读 aria-selected 也会误判。
+      // 所以：先过 QUIESCENT_ROUNDS 个 50ms 静默期（此时会话头一定已换），再从
+      // 「目标会话自己的视图偏好」判定（内核 per-session store 持久化在
+      // `dsh.conversation.<sessionId>`，见 dsh-client-ui-conversation 的
+      // readConversationViewPreference），DOM 的 aria-selected 只作并列信号——
+      // 任一为真即算成功，避免持久化滞后把「看着已经选中」误报成失败。
       const CANVAS_STORE_KEY = 'dsh.conversation'
+      const QUIESCENT_ROUNDS = 2
+      const MAX_ROUNDS = 40
       const findAgentCanvasTab = (): HTMLElement | null => {
         const tabs = Array.from(document.querySelectorAll('[role="tab"]'))
         const tab = tabs.find(node => AGENT_CANVAS_TAB_LABELS.includes(node.textContent?.trim() ?? ''))
         return tab instanceof HTMLElement ? tab : null
       }
       const canvasViewVerified = (sessionId: string, clicked: boolean): boolean => {
+        if (clicked) {
+          const tab = findAgentCanvasTab()
+          if (tab !== null && tab.getAttribute('aria-selected') === 'true') return true
+        }
         try {
           const stored = JSON.parse(localStorage.getItem(`${CANVAS_STORE_KEY}.${sessionId}`) ?? 'null')
           if (stored !== null && typeof stored === 'object' && 'view' in stored) return stored.view === AGENT_CANVAS_VIEW_ID
-        } catch { /* 内核换键或隐私模式：走下面的 DOM 信号 */ }
-        const tab = findAgentCanvasTab()
-        return clicked && tab !== null && tab.getAttribute('aria-selected') === 'true'
+        } catch { /* 内核换键或隐私模式：只看 DOM 信号 */ }
+        return false
       }
-      const selectAgentCanvasView = (sessionId: string, attempt = 0, targetRounds = 0, clicked = false) => {
-        const rounds = ctx.sessions.list.getSnapshot().current === sessionId ? targetRounds + 1 : 0
-        if (rounds >= 1 && canvasViewVerified(sessionId, clicked)) return
-        if (rounds >= 1) {
+      const selectAgentCanvasView = (sessionId: string, attempt = 0, clicked = false) => {
+        const switched = ctx.sessions.list.getSnapshot().current === sessionId
+        if (switched && attempt >= QUIESCENT_ROUNDS) {
+          if (canvasViewVerified(sessionId, clicked)) return
           const tab = findAgentCanvasTab()
           if (tab !== null && tab.getAttribute('aria-selected') !== 'true') {
             tab.click()
             clicked = true
           }
         }
-        if (attempt >= 40) {
+        if (attempt >= MAX_ROUNDS) {
           send('synapse:bridge-error', { message: '未能确认切到 Agent 画布标签，已在会话中打开' })
           return
         }
-        window.setTimeout(() => selectAgentCanvasView(sessionId, attempt + 1, rounds, clicked), 50)
+        window.setTimeout(() => selectAgentCanvasView(sessionId, attempt + 1, clicked), 50)
       }
       const onMessage = (event: MessageEvent) => {
         if (event.origin !== location.origin || event.data?.source !== 'context-web') return

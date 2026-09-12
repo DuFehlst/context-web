@@ -264,7 +264,9 @@ export class WorkspaceStore {
       // re-derived from the projection. Keep one pre-migration copy so the
       // rewrite is never silent and is recoverable.
       if (migrated) {
-        await copyFile(this.dataFile, `${this.dataFile}.bak`).catch(() => {})
+        await copyFile(this.dataFile, `${this.dataFile}.bak`).catch(error => {
+          process.stderr.write(`context-web: 无法备份 ${this.dataFile}（${error.message}），迁移将直接改写原文件\n`)
+        })
         await this.save()
       }
     } catch (error) {

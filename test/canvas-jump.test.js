@@ -44,28 +44,30 @@ test('verifies the selection per session instead of clicking whatever tab is ren
   const bridge = await read('src/client/synapseBridge.ts')
   const selector = bridge.slice(bridge.indexOf('const CANVAS_STORE_KEY'), bridge.indexOf('const onMessage'))
 
-  // Round 0 must only observe: right after ctx.sessions.open() the DOM still holds
-  // the PREVIOUS session's header, so clicking or reading aria-selected there
-  // selects (or reports) the wrong session's view.
-  assert.match(selector, /const rounds = ctx\.sessions\.list\.getSnapshot\(\)\.current === sessionId \? targetRounds \+ 1 : 0/)
-  assert.match(selector, /if \(rounds >= 1 && canvasViewVerified\(sessionId, clicked\)\) return/)
-  assert.match(selector, /if \(rounds >= 1\) \{/)
+  // ctx.sessions.open() is synchronous, so "current === sessionId" is already true
+  // on the first round while the DOM still holds the PREVIOUS session's header.
+  // A quiescence window is therefore the gate, not the current-session check.
+  assert.match(selector, /const QUIESCENT_ROUNDS = 2/)
+  assert.match(selector, /const MAX_ROUNDS = 40/)
+  assert.match(selector, /if \(switched && attempt >= QUIESCENT_ROUNDS\) \{/)
+  assert.doesNotMatch(selector, /rounds >= 1/)
 
-  // The per-session truth is the kernel's own persisted view preference; the DOM
-  // signal is only the fallback when that key is unavailable.
+  // Verification is the OR of two signals: the target session's own persisted view
+  // preference, and (once clicked) the rendered tab. A stale persisted value must
+  // not veto a DOM-confirmed selection.
   assert.match(selector, /const CANVAS_STORE_KEY = 'dsh\.conversation'/)
   assert.match(selector, /querySelectorAll\('\[role="tab"\]'\)/)
+  assert.match(selector, /if \(clicked\) \{\s*const tab = findAgentCanvasTab\(\)\s*if \(tab !== null && tab\.getAttribute\('aria-selected'\) === 'true'\) return true/)
   assert.match(selector, /localStorage\.getItem\(`\$\{CANVAS_STORE_KEY\}\.\$\{sessionId\}`\)/)
-  assert.match(selector, /stored\.view === AGENT_CANVAS_VIEW_ID/)
-  assert.match(selector, /return clicked && tab !== null && tab\.getAttribute\('aria-selected'\) === 'true'/)
+  assert.match(selector, /return stored\.view === AGENT_CANVAS_VIEW_ID/)
 })
 
 test('gives up loudly after a bounded number of rounds', async () => {
   const bridge = await read('src/client/synapseBridge.ts')
   const selector = bridge.slice(bridge.indexOf('const selectAgentCanvasView'), bridge.indexOf('const onMessage'))
 
-  assert.match(selector, /if \(attempt >= 40\)/)
-  assert.match(selector, /setTimeout\(\(\) => selectAgentCanvasView\(sessionId, attempt \+ 1, rounds, clicked\), 50\)/)
+  assert.match(selector, /if \(attempt >= MAX_ROUNDS\)/)
+  assert.match(selector, /setTimeout\(\(\) => selectAgentCanvasView\(sessionId, attempt \+ 1, clicked\), 50\)/)
   assert.match(selector, /bridge-error'[\s\S]*未能确认切到 Agent 画布标签/)
 })
 
