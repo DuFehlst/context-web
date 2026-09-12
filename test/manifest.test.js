@@ -11,11 +11,13 @@ test('context-web 包骨架声明合并插件契约', async () => {
   assert.ok(String(pkg.version).startsWith('0.1'), 'version 应为 0.1.x')
   // bundle patch 指向 cordis.patch.yml
   assert.equal(pkg.dsh?.bundle?.patch, './cordis.patch.yml')
-  // client 半区：web 平台 + 注入运行时/slots（会话地图桥 + 画布 Tab 所需服务包）
+  // client 半区：web 平台 + 注入会话/视图/slots 所需服务包。
+  // 0.1.5 起 dsh-client-runtime 已从内核移除，注入清单里不得再出现。
   assert.equal(pkg.dsh?.client?.platform, 'web')
-  for (const required of ['@deepseek-ai/dsh-client-runtime', '@deepseek-ai/dsh-client-ui-slots']) {
+  for (const required of ['@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-conversation']) {
     assert.ok(pkg.dsh.client.inject.includes(required), `dsh.client.inject 缺少 ${required}`)
   }
+  assert.ok(!pkg.dsh.client.inject.includes('@deepseek-ai/dsh-client-runtime'), '0.1.5 起 dsh-client-runtime 已移除，不应再注入')
   assert.equal(pkg.exports['./client']?.default, './lib/client.js')
   assert.ok(pkg.files.includes('lib'), 'files 应包含 lib')
   assert.ok(pkg.files.includes('app.js'), 'files 应包含 app.js')

@@ -17,7 +17,9 @@ test('AgentCanvasView 保留图构建与力导向仿真核心', async () => {
   assert.match(source, /function stepSimulation\(/)
   assert.match(source, /function colourFor\(/)
   assert.match(source, /workflowMemberIds\.has\(row\.id\)/)
-  assert.match(source, /session\.runningCalls/)
+  // 0.1.5 起会话快照拆分：工具调用改从 ConversationSnapshot 的 'chat' 视图目标读取
+  assert.match(source, /conversation\.views\.get\('chat'\)/)
+  assert.match(source, /legacy\.runningCalls/)
   assert.match(source, /data-ds-dark-theme/)
   assert.doesNotMatch(source, /dsh-agent-canvas/)
   assert.doesNotMatch(source, /dsh-synapse/)

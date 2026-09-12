@@ -14,7 +14,20 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "sourceMap": true
+    "sourceMap": true,
+    // 本插件的 @deepseek-ai/* 客户端包由 harness 在运行期提供（平台种子模块 / 引导图插件行），
+    // 本地 node_modules 只作类型来源。优先用本地副本；缺失时回落到全局 dsh 安装树，
+    // 这样类型永远与「当前实际运行的 harness 版本」一致。
+    "paths": {
+      "@deepseek-ai/cordis": ["./node_modules/@deepseek-ai/cordis"],
+      // 平台种子模块（前端外壳内置，npm 上不随内核树分发）——本地留类型副本在 @deepseek-ai-seed/
+      "@deepseek-ai/dsh-client-store": ["./node_modules/@deepseek-ai-seed/dsh-client-store"],
+      "@deepseek-ai/dsh-client-ui-slots": ["./node_modules/@deepseek-ai-seed/dsh-client-ui-slots"],
+      "@deepseek-ai/dsh-*": [
+        "./node_modules/@deepseek-ai/dsh-*",
+        "C:/Program Files/nodejs/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-*"
+      ]
+    }
   },
   "include": ["src"]
 }

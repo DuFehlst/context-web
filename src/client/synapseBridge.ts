@@ -1,32 +1,32 @@
 // 会话地图桥（迁移自 dsh-synapse client 半区，MIT，Copyright (c) 2026 liangmianya）。
 // 线协议消息类型保留 'synapse:' 前缀；命名空间（路由/数据文件/localStorage/CSS 类）已改为 context-web。
-const currentSession = ctx => {
+const currentSession = (ctx: any) => {
       const snapshot = ctx.sessions.list.getSnapshot()
       const id = snapshot.current
       if (id === undefined) return null
       const session = snapshot.byId[id]
       return session === undefined ? null : { id, title: session.displayTitle, cwd: session.cwd ?? null }
     }
-    const sessionSnapshot = ctx => {
+    const sessionSnapshot = (ctx: any) => {
       const snapshot = ctx.sessions.list.getSnapshot()
-      return snapshot.ids.map(id => {
+      return snapshot.ids.map((id: string) => {
         const session = snapshot.byId[id]
         return session === undefined ? null : { id, title: session.displayTitle, cwd: session.cwd ?? null, parentId: session.parentId ?? null, blank: session.blank }
       }).filter(Boolean)
     }
-    const workspaceSnapshot = ctx => {
+    const workspaceSnapshot = (ctx: any) => {
       const sessions = ctx.sessions.list.getSnapshot()
       const snapshot = ctx.workspaces.list.getSnapshot()
-      const accounted = new Set(snapshot.items.flatMap(workspace => workspace.sessionIds))
+      const accounted = new Set(snapshot.items.flatMap((workspace: any) => workspace.sessionIds))
       return [
-        ...snapshot.items.map(workspace => ({ id: workspace.workspaceId, title: workspace.title, path: workspace.path, sessionIds: workspace.sessionIds })),
-        { id: 'dsh-ungrouped', title: '未分组', path: null, sessionIds: sessions.ids.filter(id => !accounted.has(id)) },
+        ...snapshot.items.map((workspace: any) => ({ id: workspace.workspaceId, title: workspace.title, path: workspace.path, sessionIds: workspace.sessionIds })),
+        { id: 'dsh-ungrouped', title: '未分组', path: null, sessionIds: sessions.ids.filter((id: string) => !accounted.has(id)) },
       ]
     }
 
     export const inject = ['sessions', 'workspaces']
     export const apply = (ctx: any) => {
-      const prompt = async (sessionId, text) => {
+      const prompt = async (sessionId: string, text: string) => {
         const scope = ctx.sessions.scope(sessionId)
         const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
         if (session === undefined) throw new Error('关联的 DSH 会话已不可用')
@@ -40,12 +40,12 @@ const currentSession = ctx => {
       host.className = 'context-web-host'
       host.innerHTML = '<div class="context-web-switch" role="group" aria-label="视图切换"><button type="button" data-view="dialog" class="active" aria-pressed="true">对话</button><button type="button" data-view="map" aria-pressed="false">会话地图</button></div><section class="context-web-overlay" hidden><iframe title="会话地图" src="/context-web/"></iframe></section>'
       document.body.append(host)
-      const dialogButton = host.querySelector('[data-view="dialog"]')
-      const mapButton = host.querySelector('[data-view="map"]')
-      const overlay = host.querySelector('.context-web-overlay')
-      const frame = host.querySelector('iframe')
+      const dialogButton = host.querySelector<HTMLButtonElement>('[data-view="dialog"]')!
+      const mapButton = host.querySelector<HTMLButtonElement>('[data-view="map"]')!
+      const overlay = host.querySelector<HTMLElement>('.context-web-overlay')!
+      const frame = host.querySelector<HTMLIFrameElement>('iframe')!
 
-      const setView = view => {
+      const setView = (view: string) => {
         const showingMap = view === 'map'
         dialogButton.classList.toggle('active', !showingMap)
         dialogButton.setAttribute('aria-pressed', String(!showingMap))
@@ -61,7 +61,7 @@ const currentSession = ctx => {
         // Pause the map's projection polling while hidden.
         send('synapse:map-closed')
       }
-      const send = (type, payload) => { frame.contentWindow?.postMessage({ source: 'context-web', type, ...payload }, location.origin) }
+      const send = (type: string, payload: Record<string, unknown> = {}) => { frame.contentWindow?.postMessage({ source: 'context-web', type, ...payload }, location.origin) }
       let syncTimer = 0
       let knownSessionIds = new Set()
       const liveUnsubscribers = new Map()
@@ -75,7 +75,7 @@ const currentSession = ctx => {
           const publish = () => {
             if (overlay.hidden) return
             const state = session.getSnapshot()
-            const text = state.partial?.blocks.filter(block => block.kind === 'text').map(block => block.text).join('\n') ?? ''
+            const text = state.partial?.blocks.filter((block: { kind?: string; text?: string }) => block.kind === 'text').map((block: { kind?: string; text?: string }) => block.text).join('\n') ?? ''
             send('synapse:live-reply', { sessionId: id, running: state.running, text })
           }
           liveUnsubscribers.set(id, session.subscribe(publish))
@@ -95,7 +95,7 @@ const currentSession = ctx => {
         syncTimer = window.setTimeout(() => {
           syncTimer = 0
           const sessions = sessionSnapshot(ctx)
-          const sessionIds = new Set(sessions.map(session => session.id))
+          const sessionIds = new Set(sessions.map((session: { id: string }) => session.id))
           const removedSessionIds = [...knownSessionIds].filter(id => !sessionIds.has(id))
           knownSessionIds = sessionIds
           void fetch('/context-web/api/sessions/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessions, removedSessionIds }) }).catch(() => {})
@@ -143,7 +143,7 @@ const currentSession = ctx => {
         // re-arms (the iframe starts with polling paused until told otherwise).
         if (mapOpening || !overlay.hidden) send('synapse:map-opened')
       }
-      const onMessage = event => {
+      const onMessage = (event: MessageEvent) => {
         if (event.origin !== location.origin || event.data?.source !== 'context-web') return
         if (event.data.type === 'synapse:close') return close()
         if (event.data.type === 'synapse:map-ready') return showMapOverlay()
@@ -158,7 +158,7 @@ const currentSession = ctx => {
           // so resolve seq -> node key -> scroll once the view materializes.
           const seq = event.data.seq
           if (Number.isInteger(seq)) {
-            const tryScroll = attempt => {
+            const tryScroll = (attempt: number) => {
               const scope = ctx.sessions.scope(event.data.sessionId)
               const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
               if (session === undefined) return
@@ -188,7 +188,7 @@ const currentSession = ctx => {
         }
         if (event.data.type === 'synapse:fork-session') {
           const atSeq = Number.isInteger(event.data.atSeq) ? event.data.atSeq : undefined
-          ctx.sessions.fork({ sessionId: event.data.sessionId, atSeq, increaseTitle: true }).then(id => {
+          ctx.sessions.fork({ sessionId: event.data.sessionId, atSeq, increaseTitle: true }).then((id: string) => {
             const snapshot = ctx.sessions.list.getSnapshot()
             send('synapse:forked-session', { requestId: event.data.requestId, session: { id, title: snapshot.byId[id]?.displayTitle ?? 'DSH 分支' } })
           }).catch(() => { send('synapse:bridge-error', { message: 'DSH 分支创建失败，请确认源会话已经完成当前轮次' }) })
@@ -208,13 +208,13 @@ const currentSession = ctx => {
           const workspaceId = typeof event.data.workspaceId === 'string' && event.data.workspaceId !== '' && event.data.workspaceId !== 'dsh-ungrouped' ? event.data.workspaceId : undefined
           const cwd = typeof event.data.cwd === 'string' && event.data.cwd !== '' ? event.data.cwd : undefined
           const create = workspaceId === undefined ? ctx.sessions.create(cwd === undefined ? {} : { cwd }) : ctx.sessions.create({ workspaceId })
-          create.then(id => {
+          create.then((id: string) => {
             const snapshot = ctx.sessions.list.getSnapshot()
             send('synapse:created-session', { requestId: event.data.requestId, session: { id, title: snapshot.byId[id]?.displayTitle ?? '新会话', cwd: snapshot.byId[id]?.cwd ?? cwd ?? null } })
           }).catch(() => { send('synapse:bridge-error', { requestId: event.data.requestId, message: 'DSH 会话创建失败，请先在 DSH 选择工作目录' }) })
         }
       }
-      const onKeyDown = event => { if (event.key === 'Escape' && !overlay.hidden) close() }
+      const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape' && !overlay.hidden) close() }
       // Follow DSH's live theme switch: body[data-ds-dark-theme] is the web
       // client's dark-mode signal, mirrored into the map iframe via synapse:theme.
       const themeObserver = typeof MutationObserver === 'undefined'

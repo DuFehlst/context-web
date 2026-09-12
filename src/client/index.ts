@@ -2,10 +2,14 @@
  * context-web — 浏览器半区（合并自 dsh-synapse 与 dsh-agent-canvas，MIT）。
  * 一个模块同时注册：顶部「对话/会话地图」视图切换器 + 会话区第三个 Tab「Agent 画布」。
  */
-import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+// 0.1.5 起客户端上下文即 cordis Context（内核移除 dsh-client-runtime 包）
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workflow-run/client'
+// 0.1.5 起 slots 服务（ctx.slots）由 ui-renderer 在 cordis Context 上声明
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { AgentCanvasView, type AgentCanvasInjected } from './AgentCanvasView'
 import { apply as applySynapseBridge } from './synapseBridge'
 

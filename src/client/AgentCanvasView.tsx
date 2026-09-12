@@ -15,16 +15,18 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react'
-import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {
+  ConversationNode,
+  ConversationSnapshot,
+  ConvViewProps,
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import {
-  shallowEqual,
-  type ChatConversationViewNode,
-  type ConversationNode,
-  type ConversationSnapshot,
-  type SessionId,
-  type SessionListState,
-} from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-client-connection/client'
+import type { SessionListState, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
+// 0.1.5 起客户端共享工具改由平台种子模块 @deepseek-ai/dsh-client-store 提供
+// （原 @deepseek-ai/dsh-client-runtime/client 已被内核移除）
+import { shallowEqual } from '@deepseek-ai/dsh-client-store'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -173,11 +175,15 @@ function statusOfNode(status: NodeStatus): NodeStatus {
 
 function buildGraph(
   sessionId: SessionId,
-  session: ConversationSnapshot,
+  session: SessionSnapshot,
+  conversation: ConversationSnapshot,
   sessions: SessionListState,
 ): CanvasGraph {
   const nodes = new Map<string, CanvasNode>()
   const edges: CanvasEdge[] = []
+  // 0.1.5 起会话快照拆分：生命周期/运行态在 SessionSnapshot，视图数据（聊天
+  // 节点、运行中的工具调用）在 ConversationSnapshot 的 'chat' 视图目标里。
+  const chat = conversation.views.get('chat')
 
   const root = sessions.byId[sessionId]
   nodes.set(sessionId, {
@@ -192,7 +198,7 @@ function buildGraph(
   // Workflow members must hang under their workflow, not also under the root
   // agent. Collect them first so direct-subagent edges can skip them.
   const workflowMemberIds = new Set<string>()
-  for (const node of session.chat.nodes.values()) {
+  for (const node of chat?.nodes.values() ?? []) {
     if (node.kind !== 'workflow-run') continue
     const data = node.data as unknown as WorkflowRunChatDataLike
     for (const phase of data.phases) {
@@ -232,8 +238,7 @@ function buildGraph(
 
   // Workflow runs: the web client already folds `tool-workflow/*` events into
   // `workflow-run` chat nodes, so this stays in sync with the conversation log.
-  const workflowNodes = session.chat.nodes
-    .values()
+  const workflowNodes = (chat?.nodes.values() ?? [])
     .filter((node): node is ChatConversationViewNode & { kind: 'workflow-run' } => node.kind === 'workflow-run')
 
   for (const node of workflowNodes) {
@@ -291,7 +296,7 @@ function buildGraph(
   }
 
   // In-flight tool calls of the current agent.
-  for (const call of session.runningCalls) {
+  for (const call of chat?.legacy.runningCalls ?? []) {
     const id = `tool:${call.callId}`
     nodes.set(id, {
       id,
@@ -307,7 +312,7 @@ function buildGraph(
   // Recent tool results as compact leaf nodes, so the canvas still tracks the
   // tool-call side of the conversation log without flooding the graph with
   // user/assistant message nodes.
-  const recentTools = session.nodes
+  const recentTools = (chat?.legacy.nodes ?? [])
     .filter((node): node is Extract<ConversationNode, { kind: 'tool-result' }> => node.kind === 'tool-result')
     .slice(-MAX_ACTIVITY_NODES)
 
@@ -479,15 +484,17 @@ export function AgentCanvasView({
   sessionId,
   useSession,
   useSessions,
+  useConversation,
   refreshSubagents,
   t,
 }: ConvViewProps & AgentCanvasInjected & PropsLocale<'agentCanvas'>) {
   const session = useSession(snapshot => snapshot)
+  const conversation = useConversation(snapshot => snapshot)
   const sessions = useSessions(snapshot => snapshot, shallowEqual)
 
   const graph = useMemo(
-    () => buildGraph(sessionId, session, sessions),
-    [sessionId, session, sessions],
+    () => buildGraph(sessionId, session, conversation, sessions),
+    [sessionId, session, conversation, sessions],
   )
   const [view, setView] = useState<ViewState>({ x: 0, y: 0, k: 1 })
   const [dragging, setDragging] = useState(false)
